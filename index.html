@@ -1,13 +1,16 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
-    <title>AR Camera</title>
+    <meta charset="UTF-8">
+    <title>AR Звери</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="icon" href="data:,">
     <style>
         body {
             margin: 0;
             overflow: hidden;
             background: #000;
+            touch-action: none;
         }
 
         #videoContainer {
@@ -40,25 +43,124 @@
             text-align: center;
             z-index: 1000;
         }
-    </style>
-</head>
-<body>
-    <div class="loader" id="loader">Инициализация камеры...</div>
-    <video id="videoContainer" autoplay playsinline muted></video>
-    <div id="canvasContainer"></div>
 
-    <!-- Three.js из альтернативного CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-
-    <script>
-        // Инициализация Telegram Web App
-        if (typeof Telegram !== 'undefined') {
-            Telegram.WebApp.ready();
-            Telegram.WebApp.expand();
+        #hud {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            color: white;
+            font-family: Arial;
+            z-index: 1000;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 10px;
+            backdrop-filter: blur(5px);
         }
 
-        // Настройка камеры
-        const initCamera = async () => {
+        .capture-btn {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            background: #ff4444aa;
+            border: 3px solid #fff;
+            cursor: pointer;
+            z-index: 1000;
+            backdrop-filter: blur(5px);
+            transition: transform 0.1s;
+        }
+
+        .capture-btn:active {
+            transform: translateX(-50%) scale(0.9);
+        }
+
+        #desktop-warning {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            z-index: 9999;
+        }
+    </style>
+
+    <!-- Блокировка Web3 -->
+    <script>
+        (function() {
+            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+            if (!isMobile) {
+                document.getElementById('desktop-warning').style.display = 'block';
+                throw new Error('Desktop access blocked');
+            }
+
+            const disableWeb3 = () => {
+                try {
+                    delete window.ethereum;
+                    delete window.web3;
+                    Object.defineProperties(window, {
+                        ethereum: { get: () => undefined },
+                        web3: { get: () => undefined }
+                    });
+                } catch(e) { console.error('Web3 blocking error:', e); }
+            };
+            document.addEventListener('DOMContentLoaded', disableWeb3);
+        })();
+    </script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://hammerjs.github.io/dist/hammer.min.js"></script>
+</head>
+<body>
+    <div id="desktop-warning">
+        <h2>🚫 Доступ запрещен</h2>
+        <p>Игра доступна только на мобильных устройствах!</p>
+        <p>Откройте эту страницу в Telegram на смартфоне</p>
+    </div>
+
+    <div class="loader" id="loader">Инициализация AR...</div>
+    <video id="videoContainer" autoplay playsinline muted></video>
+    <div id="canvasContainer"></div>
+    
+    <div id="hud">
+        🐾 Поймано: <span id="score">0</span>
+    </div>
+    <div class="capture-btn" id="captureBtn"></div>
+
+    <script>
+        let currentAnimal = null;
+        let score = 0;
+        let scene, camera, renderer;
+        const animals = [
+            { type: 'fox', color: 0xFFA500, scale: 0.4 },
+            { type: 'wolf', color: 0x808080, scale: 0.5 },
+            { type: 'bear', color: 0x8B4513, scale: 0.6 }
+        ];
+
+        // Инициализация Telegram WebApp
+        function initTelegram() {
+            if (typeof Telegram !== 'undefined' && Telegram.WebApp) {
+                try {
+                    Telegram.WebApp.ready();
+                    Telegram.WebApp.expand();
+                    Telegram.WebApp.enableClosingConfirmation();
+                } catch(e) {
+                    console.warn('Telegram init error:', e);
+                }
+            }
+        }
+
+        // Инициализация камеры
+        async function initCamera() {
+            const loader = document.getElementById('loader');
+            
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: {
@@ -67,60 +169,162 @@
                         height: { ideal: 720 }
                     }
                 });
-
+                
                 const video = document.getElementById('videoContainer');
                 video.srcObject = stream;
                 video.style.transform = 'scaleX(1)';
-
-                // Инициализация Three.js после загрузки видео
-                video.onloadedmetadata = () => {
-                    initThreeJS();
-                    document.getElementById('loader').style.display = 'none';
-                };
+                
+                return new Promise(resolve => {
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        resolve();
+                    };
+                });
             } catch (error) {
-                document.getElementById('loader').innerHTML = `
+                loader.innerHTML = `
                     <div style="color: red">
-                        Ошибка доступа к камере!<br>
+                        Ошибка камеры!<br>
                         ${error.name}: ${error.message}<br>
-                        Пожалуйста:<br>
-                        1. Проверьте разрешения<br>
-                        2. Перезагрузите страницу
+                        Обновите страницу и разрешите доступ
                     </div>`;
+                throw error;
             }
-        };
+        }
 
         // Инициализация Three.js
-        const initThreeJS = () => {
-            const container = document.getElementById('canvasContainer');
-
-            // Создание сцены
-            const scene = new THREE.Scene();
-            const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-            const renderer = new THREE.WebGLRenderer({ alpha: true });
-
+        function initThreeJS() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ 
+                alpha: true,
+                antialias: true,
+                powerPreference: "high-performance"
+            });
+            
             renderer.setSize(window.innerWidth, window.innerHeight);
-            container.appendChild(renderer.domElement);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('canvasContainer').appendChild(renderer.domElement);
 
-            // Добавление 3D объекта
-            const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-            const material = new THREE.MeshBasicMaterial({ color: 0x4CC3D9 });
-            const cube = new THREE.Mesh(geometry, material);
-            scene.add(cube);
+            // Освещение
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(1, 1, 2);
+            scene.add(directionalLight);
 
             camera.position.z = 2;
-
-            // Анимация
-            const animate = () => {
-                requestAnimationFrame(animate);
-                cube.rotation.x += 0.01;
-                cube.rotation.y += 0.01;
-                renderer.render(scene, camera);
-            };
+            spawnRandomAnimal();
             animate();
-        };
+        }
 
-        // Запуск при загрузке
-        window.addEventListener('load', initCamera);
+        // Создание случайного зверя
+        function spawnRandomAnimal() {
+            if (currentAnimal) scene.remove(currentAnimal);
+            
+            const animal = animals[Math.floor(Math.random() * animals.length)];
+            const geometry = new THREE.SphereGeometry(animal.scale, 32, 32);
+            const material = new THREE.MeshPhongMaterial({
+                color: animal.color,
+                transparent: true,
+                opacity: 0.9
+            });
+            
+            currentAnimal = new THREE.Mesh(geometry, material);
+            currentAnimal.position.set(
+                (Math.random() - 0.5) * 3,
+                (Math.random() - 0.5) * 2,
+                -Math.random() * 4 - 1
+            );
+            
+            scene.add(currentAnimal);
+        }
+
+        // Механика захвата
+        function captureAnimal() {
+            score++;
+            document.getElementById('score').textContent = score;
+            hapticFeedback();
+            spawnRandomAnimal();
+            saveProgress();
+        }
+
+        // Обработка касаний
+        function initGestures() {
+            const hammer = new Hammer(document.body);
+            hammer.on('tap', (e) => {
+                const rect = renderer.domElement.getBoundingClientRect();
+                const mouse = new THREE.Vector2(
+                    ((e.center.x - rect.left) / rect.width) * 2 - 1,
+                    -((e.center.y - rect.top) / rect.height) * 2 + 1
+                );
+                
+                const raycaster = new THREE.Raycaster();
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(scene.children);
+                
+                if (intersects.length > 0) captureAnimal();
+            });
+        }
+
+        // Тактильная отдача
+        function hapticFeedback() {
+            try {
+                if (navigator.vibrate) navigator.vibrate(50);
+                if (Telegram.WebApp?.HapticFeedback) {
+                    Telegram.WebApp.HapticFeedback.impactOccurred('light');
+                }
+            } catch(e) { console.warn('Haptic error:', e); }
+        }
+
+        // Сохранение прогресса
+        function saveProgress() {
+            localStorage.setItem('arGameScore', score);
+            if (typeof Telegram !== 'undefined') {
+                Telegram.WebApp.sendData(JSON.stringify({ score }));
+            }
+        }
+
+        // Анимация
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (currentAnimal) {
+                currentAnimal.rotation.x += 0.01;
+                currentAnimal.rotation.y += 0.01;
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        // Запуск игры
+        async function initGame() {
+            try {
+                initTelegram();
+                await initCamera();
+                document.getElementById('loader').style.display = 'none';
+                initThreeJS();
+                initGestures();
+                
+                // Восстановление прогресса
+                const savedScore = localStorage.getItem('arGameScore');
+                if (savedScore) {
+                    score = parseInt(savedScore);
+                    document.getElementById('score').textContent = score;
+                }
+            } catch(e) {
+                console.error('Init error:', e);
+            }
+        }
+
+        // Обработчик изменения размера
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Старт игры
+        window.addEventListener('load', initGame);
     </script>
 </body>
 </html>
