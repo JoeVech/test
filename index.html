@@ -4,91 +4,80 @@
     <title>AR Camera</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
-        /* Полноэкранные стили */
-        body {
-            margin: 0;
-            overflow: hidden;
-            background: #000;
-        }
-
-        #arScene {
-            width: 100vw;
-            height: 100vh;
-            position: fixed;
-            top: 0;
-            left: 0;
-        }
-
-        .loader {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: white;
-            font-family: Arial;
-            text-align: center;
-            z-index: 1000;
-        }
+        /* Ваши стили остаются без изменений */
     </style>
 
-    <!-- Блокировка Web3 расширений -->
-    <script>
-        (function () {
-            const disableWeb3 = () => {
-                delete window.ethereum;
-                delete window.web3;
-                Object.defineProperties(window, {
-                    ethereum: { get: () => undefined },
-                    web3: { get: () => undefined }
-                });
-            };
-
-            if (document.readyState === 'complete') disableWeb3();
-            else window.addEventListener('load', disableWeb3);
-        })();
-    </script>
-
-    <!-- Библиотеки -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/aframe/1.2.0/aframe.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.0/aframe/build/aframe-ar.min.js"></script>
+    <!-- Обновленные версии библиотек -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/aframe/1.4.2/aframe.min.js"></script>
+    <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar-nft.js"></script>
 </head>
 <body>
     <div class="loader" id="loader">Инициализация AR...</div>
 
-    <a-scene id="arScene"
-             vr-mode-ui="enabled: false"
-             embedded
-             arjs="sourceType: webcam; debugUIEnabled: false;">
-        <a-camera gps-camera rotation-reader></a-camera>
+    <a-scene 
+        id="arScene"
+        vr-mode-ui="enabled: false"
+        embedded
+        arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
+        renderer="logarithmicDepthBuffer: true; precision: medium;"
+        gesture-detector
+    >
+        <!-- Камера с настройкой для задней камеры -->
+        <a-camera 
+            gps-camera 
+            rotation-reader 
+            look-controls="enabled: false"
+            arjs-device-orientation-controls="smoothingFactor: 0.8"
+        ></a-camera>
+
+        <!-- Тестовый куб -->
         <a-box position="0 0 -2" color="#4CC3D9" scale="0.5 0.5 0.5"></a-box>
     </a-scene>
 
     <script>
-        // Инициализация только внутри Telegram Web App
+        // Инициализация Telegram Web App
         if (typeof Telegram !== 'undefined' && Telegram.WebApp) {
             Telegram.WebApp.ready();
             Telegram.WebApp.expand();
         }
 
-        // Обработка загрузки сцены
-        document.querySelector('a-scene').addEventListener('loaded', () => {
-            document.getElementById('loader').style.display = 'none';
-        });
+        // Явный запрос разрешения на камеру
+        async function initAR() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                });
+                
+                document.getElementById('loader').style.display = 'none';
+                
+                // Обновление источника видео для AR.js
+                const scene = document.querySelector('a-scene');
+                if (scene.systems.arjs) {
+                    scene.systems.arjs.updateVideoSrc(stream);
+                }
+            } catch (error) {
+                handleCameraError(error);
+            }
+        }
 
-        // Обработка ошибок камеры
-        navigator.mediaDevices.getUserMedia({ video: true })
-            .catch(error => {
-                const loader = document.getElementById('loader');
-                loader.innerHTML = `
-                        <div style="color: red">
-                            Ошибка доступа к камере!<br>
-                            ${error.name}: ${error.message}<br>
-                            Пожалуйста:<br>
-                            1. Проверьте разрешения<br>
-                            2. Перезагрузите страницу
-                        </div>
-                    `;
-            });
+        function handleCameraError(error) {
+            const loader = document.getElementById('loader');
+            loader.innerHTML = `
+                <div style="color: red">
+                    Ошибка доступа к камере!<br>
+                    ${error.name}: ${error.message}<br>
+                    Пожалуйста:<br>
+                    1. Разрешите доступ к камере<br>
+                    2. Обновите страницу
+                </div>`;
+        }
+
+        // Запуск после загрузки сцены
+        document.querySelector('a-scene').addEventListener('loaded', initAR);
     </script>
 </body>
 </html>
