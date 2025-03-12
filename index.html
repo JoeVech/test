@@ -1,83 +1,173 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AR Camera</title>
+    <title>AR Звери (Telegram)</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
-        /* Ваши стили остаются без изменений */
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+        }
+        #arScene {
+            width: 100vw;
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        .loader {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: Arial;
+            text-align: center;
+            z-index: 1000;
+        }
+        #map {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 200px;
+            height: 200px;
+            border-radius: 15px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.5);
+            display: none;
+        }
     </style>
 
-    <!-- Обновленные версии библиотек -->
+    <!-- Библиотеки -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/aframe/1.4.2/aframe.min.js"></script>
-    <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar-nft.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/aframevr/ar.js@master/data/libs/threex/threex-arbasecontrols.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.7/aframe/build/aframe-ar-nft.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
     <div class="loader" id="loader">Инициализация AR...</div>
+    <div id="map"></div>
 
     <a-scene 
         id="arScene"
         vr-mode-ui="enabled: false"
         embedded
-        arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
+        arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false; detectionMode: mono; maxDetectionRate: 60;"
         renderer="logarithmicDepthBuffer: true; precision: medium;"
         gesture-detector
     >
-        <!-- Камера с настройкой для задней камеры -->
         <a-camera 
             gps-camera 
             rotation-reader 
             look-controls="enabled: false"
-            arjs-device-orientation-controls="smoothingFactor: 0.8"
+            arjs-device-orientation-controls="smoothingFactor: 0.8; orientationOffset: 90"
         ></a-camera>
 
-        <!-- Тестовый куб -->
-        <a-box position="0 0 -2" color="#4CC3D9" scale="0.5 0.5 0.5"></a-box>
+        <!-- Пример зверя -->
+        <a-entity 
+            class="animal"
+            gltf-model="https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models/2.0/Fox/glTF/Fox.gltf"
+            scale="0.5 0.5 0.5"
+            gps-entity-place="latitude: 44.952116; longitude: 34.102411;"
+            animation-mixer
+            visible="false"
+        ></a-entity>
     </a-scene>
 
     <script>
-        // Инициализация Telegram Web App
+        // Инициализация Telegram WebApp
         if (typeof Telegram !== 'undefined' && Telegram.WebApp) {
             Telegram.WebApp.ready();
             Telegram.WebApp.expand();
+            Telegram.WebApp.enableClosingConfirmation();
         }
 
-        // Явный запрос разрешения на камеру
+        // Альтернативная геолокация
+        async function getGeo() {
+            return new Promise((resolve, reject) => {
+                const fallbackAPI = 'https://ipapi.co/json/';
+                
+                navigator.geolocation.getCurrentPosition(
+                    pos => resolve(pos),
+                    async () => {
+                        try {
+                            const response = await fetch(fallbackAPI);
+                            const data = await response.json();
+                            resolve({
+                                coords: {
+                                    latitude: data.latitude,
+                                    longitude: data.longitude,
+                                    accuracy: 5000
+                                }
+                            });
+                        } catch (error) {
+                            reject(new Error('Не удалось определить местоположение'));
+                        }
+                    },
+                    {enableHighAccuracy: true, timeout: 7000}
+                );
+            });
+        }
+
+        // Основная инициализация
         async function initAR() {
             try {
+                // Получение геопозиции
+                const position = await getGeo();
+                console.log('Координаты:', position.coords);
+
+                // Инициализация карты
+                const map = L.map('map', {
+                    attributionControl: false,
+                    zoomControl: false
+                }).setView([position.coords.latitude, position.coords.longitude], 15);
+                
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 19,
+                }).addTo(map);
+
+                document.getElementById('map').style.display = 'block';
+
+                // Активация камеры
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: {
                         facingMode: 'environment',
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
+                        width: {ideal: 1280},
+                        height: {ideal: 720}
                     }
                 });
-                
-                document.getElementById('loader').style.display = 'none';
-                
-                // Обновление источника видео для AR.js
-                const scene = document.querySelector('a-scene');
-                if (scene.systems.arjs) {
-                    scene.systems.arjs.updateVideoSrc(stream);
-                }
-            } catch (error) {
-                handleCameraError(error);
-            }
-        }
 
-        function handleCameraError(error) {
-            const loader = document.getElementById('loader');
-            loader.innerHTML = `
-                <div style="color: red">
-                    Ошибка доступа к камере!<br>
-                    ${error.name}: ${error.message}<br>
-                    Пожалуйста:<br>
-                    1. Разрешите доступ к камере<br>
-                    2. Обновите страницу
-                </div>`;
+                // Обновление AR-сцены
+                const scene = document.querySelector('a-scene');
+                scene.systems.arjs.updateVideoSrc(stream);
+                document.getElementById('loader').style.display = 'none';
+
+                // Показать зверей через 3 сек
+                setTimeout(() => {
+                    document.querySelector('.animal').setAttribute('visible', 'true');
+                }, 3000);
+
+            } catch (error) {
+                console.error('Ошибка:', error);
+                document.getElementById('loader').innerHTML = `
+                    <div style="color: red; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px;">
+                        ${error.message}<br>
+                        1. Разрешите доступ к камере<br>
+                        2. Проверьте интернет-соединение<br>
+                        3. Перезагрузите страницу
+                    </div>`;
+            }
         }
 
         // Запуск после загрузки сцены
         document.querySelector('a-scene').addEventListener('loaded', initAR);
+
+        // Блокировка Web3
+        window.addEventListener('load', () => {
+            delete window.ethereum;
+            delete window.web3;
+        });
     </script>
 </body>
 </html>
