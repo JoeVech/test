@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
     <style>
         body { margin: 0; overflow: hidden; }
-        #renderCanvas { width: 100%; height: 100%; }
-        #hud {
+        #renderCanvas { width: 100%; height: 100%; touch-action: none; }
+        #status {
             position: fixed;
             top: 20px;
-            right: 20px;
+            left: 20px;
             color: white;
             font-family: Arial;
             background: rgba(0,0,0,0.7);
@@ -18,165 +18,153 @@
             z-index: 1000;
         }
     </style>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
 </head>
 <body>
     <canvas id="renderCanvas"></canvas>
-    <div id="hud">Зверей: <span id="counter">0</span></div>
-    
-    <script src="https://cdn.babylonjs.com/babylon.js"></script>
-    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js"></script>
+    <div id="status">Инициализация...</div>
 
     <script>
-        const ANIMAL_TYPES = {
-            fox: { file: 'fox.glb', scale: 0.5 },
-            rabbit: { file: 'rabbit.glb', scale: 0.3 },
-            bear: { file: 'bear.glb', scale: 0.7 }
-        };
+        // Конфигурация
+        const DEBUG_MODE = true;
+        const INITIAL_ANIMALS_COUNT = 10;
 
-        class Game {
+        class ARGame {
             constructor() {
-                this.engine = new BABYLON.Engine(document.getElementById('renderCanvas'), true);
+                this.canvas = document.getElementById('renderCanvas');
+                this.engine = null;
                 this.scene = null;
                 this.xr = null;
-                this.animals = [];
-                this.animalPool = [];
                 this.init();
             }
 
             async init() {
-                // Создание сцены
-                this.scene = new BABYLON.Scene(this.engine);
-                this.scene.gravity = new BABYLON.Vector3(0, -9.81, 0);
-                this.scene.enablePhysics(null, new BABYLON.CannonJSPlugin());
-
-                // Камера и свет
-                this.setupCameraAndLight();
-                
-                // Настройка AR
-                await this.setupAR();
-
-                // Загрузка моделей
-                await this.preloadModels();
-
-                // Интерфейс
-                this.setupUI();
-
-                // Главный цикл
-                this.engine.runRenderLoop(() => this.scene.render());
-            }
-
-            setupCameraAndLight() {
-                // Камера
-                this.camera = new BABYLON.UniversalCamera("camera", new BABYLON.Vector3(0, 1.6, 0), this.scene);
-                this.camera.minZ = 0.1;
-
-                // Освещение
-                new BABYLON.HemisphericLight("light1", new BABYLON.Vector3(1, 1, 0), this.scene);
-                new BABYLON.DirectionalLight("light2", new BABYLON.Vector3(0, -1, 1), this.scene);
-            }
-
-            async setupAR() {
-                // Инициализация WebXR
-                this.xr = await this.scene.createDefaultXRExperienceAsync({
-                    uiOptions: {
-                        sessionMode: "immersive-ar",
-                        referenceSpaceType: "local-floor"
-                    }
-                });
-
-                // Детекция плоскостей
-                this.xr.baseExperience.featuresManager.enableFeature(BABYLON.WebXRPlaneDetector, "latest");
-                
-                // Обработка касаний
-                this.xr.input.onControllerAddedObservable.add(controller => {
-                    controller.onMotionControllerInitObservable.add(motionController => {
-                        motionController.getComponent("trigger").onButtonStateChangedObservable.add(() => {
-                            this.spawnAnimal();
-                        });
+                try {
+                    // Инициализация движка
+                    this.engine = new BABYLON.Engine(this.canvas, true, {
+                        preserveDrawingBuffer: true,
+                        stencil: true
                     });
-                });
-            }
 
-            async preloadModels() {
-                // Загрузка моделей животных
-                for (const type in ANIMAL_TYPES) {
-                    const result = await BABYLON.SceneLoader.ImportMeshAsync(
-                        "", 
-                        "models/", 
-                        ANIMAL_TYPES[type].file, 
-                        this.scene
-                    );
+                    // Проверка WebGL
+                    if (!this.engine.isSupported()) {
+                        this.showError('WebGL не поддерживается!');
+                        return;
+                    }
+
+                    // Создание сцены
+                    this.scene = await this.createScene();
                     
-                    // Создание пула объектов
-                    const proto = result.meshes[0];
-                    proto.setEnabled(false);
-                    this.animalPool.push({ proto, type });
+                    // Проверка AR
+                    if (await this.checkARSupport()) {
+                        await this.enableAR();
+                    } else {
+                        this.createFallbackScene();
+                    }
+
+                    // Старт рендеринга
+                    this.engine.runRenderLoop(() => this.scene.render());
+
+                } catch (error) {
+                    this.showError(`Ошибка: ${error.message}`);
                 }
             }
 
-            spawnAnimal() {
-                if (this.animalPool.length === 0) return;
-
-                // Получение случайного животного из пула
-                const { proto, type } = this.animalPool.pop();
-                const animal = proto.clone(`${type}_${Date.now()}`, null);
+            async createScene() {
+                const scene = new BABYLON.Scene(this.engine);
                 
-                // Позиционирование
-                const hitPos = this.getRandomPlanePosition();
-                animal.position = hitPos.add(new BABYLON.Vector3(
-                    Math.random() * 2 - 1,
-                    0,
-                    Math.random() * 2 - 1
-                ));
-
-                // Настройка физики
-                animal.physicsImpostor = new BABYLON.PhysicsImpostor(
-                    animal,
-                    BABYLON.PhysicsImpostor.MeshImpostor,
-                    { mass: 1, friction: 0.5 }
+                // Камера
+                const camera = new BABYLON.ArcRotateCamera(
+                    "camera", 
+                    -Math.PI/2, Math.PI/2, 10, 
+                    BABYLON.Vector3.Zero(), 
+                    scene
                 );
+                camera.attachControl(this.canvas, false);
 
-                // Анимация
-                this.setupAnimalAnimation(animal);
+                // Освещение
+                new BABYLON.HemisphericLight("light1", new BABYLON.Vector3(1, 1, 0), scene);
+                new BABYLON.DirectionalLight("light2", new BABYLON.Vector3(0, -1, 1), scene);
 
-                this.animals.push(animal);
-                document.getElementById('counter').textContent = this.animals.length;
+                // Земля
+                const ground = BABYLON.MeshBuilder.CreateGround("ground", 
+                    { width: 20, height: 20 }, 
+                    scene
+                );
+                ground.position.y = -1;
+
+                // Спавн зверей
+                this.spawnAnimals(scene);
+
+                return scene;
             }
 
-            getRandomPlanePosition() {
-                // Получение случайной плоскости
-                const planes = this.xr.baseExperience.featuresManager.getEnabledFeature(
-                    BABYLON.WebXRPlaneDetector
-                ).planes;
-                
-                return planes[Math.floor(Math.random() * planes.length)].position;
+            spawnAnimals(scene) {
+                for (let i = 0; i < INITIAL_ANIMALS_COUNT; i++) {
+                    const animal = BABYLON.MeshBuilder.CreateSphere(
+                        `animal_${i}`, 
+                        { diameter: 0.5 }, 
+                        scene
+                    );
+                    animal.position = new BABYLON.Vector3(
+                        Math.random() * 10 - 5,
+                        0.5,
+                        Math.random() * 10 - 5
+                    );
+                    animal.material = new BABYLON.StandardMaterial("mat", scene);
+                    animal.material.diffuseColor = new BABYLON.Color3(
+                        Math.random(),
+                        Math.random(),
+                        Math.random()
+                    );
+                }
             }
 
-            setupAnimalAnimation(animal) {
-                // Простая анимация
-                let angle = 0;
-                this.scene.registerBeforeRender(() => {
-                    angle += 0.02;
-                    animal.rotation.y = Math.sin(angle) * 0.5;
-                });
+            async checkARSupport() {
+                if (!navigator.xr) return false;
+                return await navigator.xr.isSessionSupported('immersive-ar');
             }
 
-            setupUI() {
-                // Кнопка запуска AR
-                const btn = document.createElement('button');
-                btn.textContent = 'Start AR';
-                btn.style.position = 'fixed';
-                btn.style.bottom = '20px';
-                btn.style.left = '50%';
-                btn.style.transform = 'translateX(-50%)';
-                btn.onclick = () => this.xr.baseExperience.enterXRAsync();
-                document.body.appendChild(btn);
+            async enableAR() {
+                try {
+                    this.xr = await this.scene.createDefaultXRExperienceAsync({
+                        uiOptions: {
+                            sessionMode: "immersive-ar",
+                            referenceSpaceType: "local-floor"
+                        }
+                    });
+
+                    // Обработчик ошибок AR
+                    this.xr.baseExperience.sessionManager.onXRSessionInitError.add((error) => {
+                        this.showError(`AR ошибка: ${error.message}`);
+                        this.createFallbackScene();
+                    });
+
+                    this.updateStatus("AR режим активирован");
+
+                } catch (error) {
+                    this.showError(`AR недоступен: ${error.message}`);
+                    this.createFallbackScene();
+                }
+            }
+
+            createFallbackScene() {
+                this.updateStatus("3D режим");
+                this.scene.activeCamera.alpha += Math.PI; // Поворот камеры
+            }
+
+            showError(message) {
+                this.updateStatus(`ОШИБКА: ${message}`);
+                console.error(message);
+            }
+
+            updateStatus(text) {
+                document.getElementById('status').textContent = text;
             }
         }
 
         // Запуск игры
-        window.addEventListener('load', () => new Game());
+        window.addEventListener('load', () => new ARGame());
     </script>
 </body>
 </html>
