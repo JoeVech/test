@@ -1,112 +1,94 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AR Звери в Telegram</title>
+    <title>AR Camera</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
-        body { 
-            margin: 0; 
-            overflow: hidden; 
+        /* Полноэкранные стили */
+        body {
+            margin: 0;
+            overflow: hidden;
             background: #000;
-            color: white;
-            font-family: Arial;
         }
-        #arOverlay {
+
+        #arScene {
+            width: 100vw;
+            height: 100vh;
             position: fixed;
             top: 0;
             left: 0;
-            width: 100%;
-            height: 100%;
-            display: none;
+        }
+
+        .loader {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: Arial;
+            text-align: center;
             z-index: 1000;
         }
-        #instructions {
-            padding: 20px;
-            text-align: center;
-        }
     </style>
-    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+
+    <!-- Блокировка Web3 расширений -->
+    <script>
+        (function () {
+            const disableWeb3 = () => {
+                delete window.ethereum;
+                delete window.web3;
+                Object.defineProperties(window, {
+                    ethereum: { get: () => undefined },
+                    web3: { get: () => undefined }
+                });
+            };
+
+            if (document.readyState === 'complete') disableWeb3();
+            else window.addEventListener('load', disableWeb3);
+        })();
+    </script>
+
+    <!-- Библиотеки -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/aframe/1.2.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.0/aframe/build/aframe-ar.min.js"></script>
 </head>
 <body>
-    <canvas id="renderCanvas"></canvas>
-    <div id="arOverlay">
-        <div id="instructions">
-            <h2>🔍 AR не работает в Telegram</h2>
-            <p>Для игры в AR:</p>
-            <ol>
-                <li>Нажмите кнопку "•••" в правом верхнем углу</li>
-                <li>Выберите "Открыть в браузере"</li>
-                <li>Разрешите доступ к камере</li>
-            </ol>
-            <button onclick="location.reload()">🔄 Обновить страницу</button>
-        </div>
-    </div>
+    <div class="loader" id="loader">Инициализация AR...</div>
+
+    <a-scene id="arScene"
+             vr-mode-ui="enabled: false"
+             embedded
+             arjs="sourceType: webcam; debugUIEnabled: false;">
+        <a-camera gps-camera rotation-reader></a-camera>
+        <a-box position="0 0 -2" color="#4CC3D9" scale="0.5 0.5 0.5"></a-box>
+    </a-scene>
 
     <script>
-        class ARGame {
-            constructor() {
-                this.canvas = document.getElementById('renderCanvas');
-                this.arOverlay = document.getElementById('arOverlay');
-                this.init();
-            }
-
-            async init() {
-                try {
-                    // Проверяем поддержку WebXR
-                    const isARSupported = await this.checkARSupport();
-                    
-                    if (isARSupported && navigator.mediaDevices) {
-                        await this.startAR();
-                    } else {
-                        this.showARInstructions();
-                    }
-                } catch (error) {
-                    this.showARInstructions();
-                }
-            }
-
-            async checkARSupport() {
-                return navigator.xr && 
-                    await navigator.xr.isSessionSupported('immersive-ar');
-            }
-
-            async startAR() {
-                // Инициализация Babylon.js
-                const engine = new BABYLON.Engine(this.canvas, true);
-                const scene = new BABYLON.Scene(engine);
-                
-                // Настройка AR камеры
-                const xr = await scene.createDefaultXRExperienceAsync({
-                    uiOptions: {
-                        sessionMode: "immersive-ar",
-                        referenceSpaceType: "local-floor"
-                    }
-                });
-
-                // Создаем AR-объекты
-                this.createARContent(scene);
-
-                engine.runRenderLoop(() => scene.render());
-            }
-
-            createARContent(scene) {
-                // Пример: вращающийся куб
-                const box = BABYLON.MeshBuilder.CreateBox("arBox", { size: 0.5 }, scene);
-                box.position.y = 1.5;
-                
-                scene.onBeforeRenderObservable.add(() => {
-                    box.rotation.y += 0.02;
-                });
-            }
-
-            showARInstructions() {
-                this.arOverlay.style.display = "block";
-                this.canvas.style.display = "none";
-            }
+        // Инициализация только внутри Telegram Web App
+        if (typeof Telegram !== 'undefined' && Telegram.WebApp) {
+            Telegram.WebApp.ready();
+            Telegram.WebApp.expand();
         }
 
-        // Запуск при загрузке
-        window.addEventListener('load', () => new ARGame());
+        // Обработка загрузки сцены
+        document.querySelector('a-scene').addEventListener('loaded', () => {
+            document.getElementById('loader').style.display = 'none';
+        });
+
+        // Обработка ошибок камеры
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .catch(error => {
+                const loader = document.getElementById('loader');
+                loader.innerHTML = `
+                        <div style="color: red">
+                            Ошибка доступа к камере!<br>
+                            ${error.name}: ${error.message}<br>
+                            Пожалуйста:<br>
+                            1. Проверьте разрешения<br>
+                            2. Перезагрузите страницу
+                        </div>
+                    `;
+            });
     </script>
 </body>
 </html>
