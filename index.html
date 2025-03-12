@@ -1,221 +1,112 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AR Звери</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <title>AR Звери в Telegram</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
-        body { margin: 0; overflow: hidden; }
-        #renderCanvas { width: 100%; height: 100%; touch-action: none; }
-        #status {
-            position: fixed;
-            top: 20px;
-            left: 20px;
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: #000;
             color: white;
             font-family: Arial;
-            background: rgba(0,0,0,0.7);
-            padding: 15px;
-            border-radius: 10px;
+        }
+        #arOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: none;
             z-index: 1000;
         }
-        #arButton {
-            position: fixed;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            padding: 10px 20px;
-            background: #2196F3;
-            color: white;
-            border: none;
-            border-radius: 25px;
-            cursor: pointer;
+        #instructions {
+            padding: 20px;
+            text-align: center;
         }
     </style>
     <script src="https://cdn.babylonjs.com/babylon.js"></script>
 </head>
 <body>
     <canvas id="renderCanvas"></canvas>
-    <div id="status">⏳ Инициализация...</div>
-    <button id="arButton" style="display: none;">🚀 Запустить AR</button>
+    <div id="arOverlay">
+        <div id="instructions">
+            <h2>🔍 AR не работает в Telegram</h2>
+            <p>Для игры в AR:</p>
+            <ol>
+                <li>Нажмите кнопку "•••" в правом верхнем углу</li>
+                <li>Выберите "Открыть в браузере"</li>
+                <li>Разрешите доступ к камере</li>
+            </ol>
+            <button onclick="location.reload()">🔄 Обновить страницу</button>
+        </div>
+    </div>
 
     <script>
         class ARGame {
             constructor() {
                 this.canvas = document.getElementById('renderCanvas');
-                this.statusElement = document.getElementById('status');
-                this.arButton = document.getElementById('arButton');
-                this.engine = null;
-                this.scene = null;
-                this.xr = null;
+                this.arOverlay = document.getElementById('arOverlay');
                 this.init();
             }
 
             async init() {
                 try {
-                    // 1. Проверка поддержки WebGL
-                    if (!this.checkWebGLSupport()) return;
-
-                    // 2. Инициализация движка
-                    this.engine = new BABYLON.Engine(this.canvas, true);
-                    this.updateStatus("🎮 Движок инициализирован");
-
-                    // 3. Создание базовой сцены
-                    this.scene = await this.createBasicScene();
+                    // Проверяем поддержку WebXR
+                    const isARSupported = await this.checkARSupport();
                     
-                    // 4. Проверка AR
-                    if (await this.checkARSupport()) {
-                        this.setupARButton();
+                    if (isARSupported && navigator.mediaDevices) {
+                        await this.startAR();
                     } else {
-                        this.createFallbackScene();
+                        this.showARInstructions();
                     }
-
-                    // 5. Запуск рендеринга
-                    this.engine.runRenderLoop(() => {
-                        this.scene.render();
-                    });
-
                 } catch (error) {
-                    this.showError(`💥 Ошибка: ${error.message}`);
+                    this.showARInstructions();
                 }
             }
 
-            // Проверка WebGL поддержки
-            checkWebGLSupport() {
-                if (!BABYLON.Engine.isSupported()) {
-                    this.showError("❌ WebGL не поддерживается вашим браузером");
-                    return false;
-                }
-                return true;
-            }
-
-            // Создание базовой 3D сцены
-            async createBasicScene() {
-                const scene = new BABYLON.Scene(this.engine);
-                
-                // Камера
-                const camera = new BABYLON.ArcRotateCamera(
-                    "camera", 
-                    -Math.PI/2, 
-                    Math.PI/2.5, 
-                    15, 
-                    BABYLON.Vector3.Zero(), 
-                    scene
-                );
-                camera.attachControl(this.canvas, false);
-
-                // Освещение
-                new BABYLON.HemisphericLight("light1", new BABYLON.Vector3(1, 1, 0), scene);
-                
-                // Земля
-                const ground = BABYLON.MeshBuilder.CreateGround(
-                    "ground", 
-                    { width: 20, height: 20 }, 
-                    scene
-                );
-                ground.position.y = -1;
-
-                // Спавн зверей
-                this.spawnRandomAnimals(scene, 10);
-
-                this.updateStatus("🦁 Базовая сцена готова");
-                return scene;
-            }
-
-            // Спавн случайных животных
-            spawnRandomAnimals(scene, count) {
-                const animalColors = [
-                    new BABYLON.Color3(1, 0.2, 0.2), // Красный
-                    new BABYLON.Color3(0.2, 1, 0.2), // Зеленый
-                    new BABYLON.Color3(0.2, 0.2, 1)  // Синий
-                ];
-
-                for (let i = 0; i < count; i++) {
-                    const animal = BABYLON.MeshBuilder.CreateSphere(
-                        `animal_${i}`, 
-                        { diameter: 0.8 }, 
-                        scene
-                    );
-                    animal.position = new BABYLON.Vector3(
-                        Math.random() * 16 - 8,
-                        0.5,
-                        Math.random() * 16 - 8
-                    );
-                    
-                    const material = new BABYLON.StandardMaterial("mat", scene);
-                    material.diffuseColor = animalColors[Math.floor(Math.random() * 3)];
-                    animal.material = material;
-                }
-            }
-
-            // Проверка поддержки AR
             async checkARSupport() {
-                if (!navigator.xr) return false;
-                try {
-                    return await navigator.xr.isSessionSupported('immersive-ar');
-                } catch {
-                    return false;
-                }
+                return navigator.xr && 
+                    await navigator.xr.isSessionSupported('immersive-ar');
             }
 
-            // Настройка кнопки AR
-            setupARButton() {
-                this.arButton.style.display = "block";
-                this.arButton.onclick = async () => {
-                    try {
-                        this.updateStatus("🔄 Запуск AR...");
-                        await this.enableAR();
-                    } catch (error) {
-                        this.showError(`🚫 AR ошибка: ${error.message}`);
-                    }
-                };
-            }
-
-            // Активация AR режима
-            async enableAR() {
-                this.xr = await this.scene.createDefaultXRExperienceAsync({
+            async startAR() {
+                // Инициализация Babylon.js
+                const engine = new BABYLON.Engine(this.canvas, true);
+                const scene = new BABYLON.Scene(engine);
+                
+                // Настройка AR камеры
+                const xr = await scene.createDefaultXRExperienceAsync({
                     uiOptions: {
                         sessionMode: "immersive-ar",
                         referenceSpaceType: "local-floor"
                     }
                 });
 
-                // Обработчик завершения сессии
-                this.xr.baseExperience.sessionManager.onXRSessionEnded.add(() => {
-                    this.updateStatus("🔄 Возврат в 3D режим");
-                    this.createFallbackScene();
+                // Создаем AR-объекты
+                this.createARContent(scene);
+
+                engine.runRenderLoop(() => scene.render());
+            }
+
+            createARContent(scene) {
+                // Пример: вращающийся куб
+                const box = BABYLON.MeshBuilder.CreateBox("arBox", { size: 0.5 }, scene);
+                box.position.y = 1.5;
+                
+                scene.onBeforeRenderObservable.add(() => {
+                    box.rotation.y += 0.02;
                 });
-
-                this.updateStatus("🌟 AR режим активен! Смотрите вокруг!");
             }
 
-            // Резервная 3D сцена
-            createFallbackScene() {
-                this.scene.activeCamera.alpha += Math.PI;
-                this.updateStatus("🎮 3D режим - Используйте касание для управления");
-            }
-
-            // Обновление статуса
-            updateStatus(text) {
-                this.statusElement.textContent = text;
-                console.log(text);
-            }
-
-            // Показ ошибок
-            showError(message) {
-                this.statusElement.style.color = "#ff4444";
-                this.statusElement.textContent = message;
-                console.error(message);
+            showARInstructions() {
+                this.arOverlay.style.display = "block";
+                this.canvas.style.display = "none";
             }
         }
 
-        // Запуск игры при загрузке
+        // Запуск при загрузке
         window.addEventListener('load', () => new ARGame());
-
-        // Обработка изменения размера окна
-        window.addEventListener('resize', () => {
-            if (game?.engine) {
-                game.engine.resize();
-            }
-        });
     </script>
 </body>
 </html>
