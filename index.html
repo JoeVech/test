@@ -1,303 +1,182 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>AR Звери на плоскости</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <link rel="icon" href="data:,">
+    <title>AR Звери</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
     <style>
-        body {
-            margin: 0;
-            overflow: hidden;
-            background: #000;
-            touch-action: none;
-        }
-
-        #videoContainer {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            z-index: 1;
-        }
-
-        #canvasContainer {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 2;
-            pointer-events: none;
-        }
-
-        .loader {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: white;
-            font-family: Arial;
-            text-align: center;
-            z-index: 1000;
-        }
-
+        body { margin: 0; overflow: hidden; }
+        #renderCanvas { width: 100%; height: 100%; }
         #hud {
             position: fixed;
             top: 20px;
             right: 20px;
             color: white;
             font-family: Arial;
-            z-index: 1000;
             background: rgba(0,0,0,0.7);
             padding: 15px;
             border-radius: 10px;
-            backdrop-filter: blur(5px);
-        }
-
-        #plane-marker {
-            position: fixed;
-            width: 50px;
-            height: 50px;
-            border: 3px solid #00ff00;
-            border-radius: 10px;
-            pointer-events: none;
-            display: none;
-            z-index: 999;
+            z-index: 1000;
         }
     </style>
-
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://hammerjs.github.io/dist/hammer.min.js"></script>
 </head>
 <body>
-    <div class="loader" id="loader">Инициализация AR...</div>
-    <video id="videoContainer" autoplay playsinline muted></video>
-    <div id="canvasContainer"></div>
-    <div id="plane-marker"></div>
+    <canvas id="renderCanvas"></canvas>
+    <div id="hud">Зверей: <span id="counter">0</span></div>
     
-    <div id="hud">
-        🐾 Поймано: <span id="score">0</span>
-    </div>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js"></script>
 
     <script>
-        let currentAnimal = null;
-        let score = 0;
-        let scene, camera, renderer, planeMesh;
-        let isPlaneDetected = false;
-        const planeSize = 5;
+        const ANIMAL_TYPES = {
+            fox: { file: 'fox.glb', scale: 0.5 },
+            rabbit: { file: 'rabbit.glb', scale: 0.3 },
+            bear: { file: 'bear.glb', scale: 0.7 }
+        };
 
-        const animals = [
-            { type: 'fox', color: 0xFFA500, scale: 0.4 },
-            { type: 'wolf', color: 0x808080, scale: 0.5 },
-            { type: 'bear', color: 0x8B4513, scale: 0.6 }
-        ];
-
-        // Инициализация
-        async function initGame() {
-            try {
-                await initCamera();
-                initThreeJS();
-                initGestures();
-                showPlaneDetectionHint();
-                loadProgress();
-            } catch(e) {
-                document.getElementById('loader').innerHTML = `Ошибка: ${e.message}`;
+        class Game {
+            constructor() {
+                this.engine = new BABYLON.Engine(document.getElementById('renderCanvas'), true);
+                this.scene = null;
+                this.xr = null;
+                this.animals = [];
+                this.animalPool = [];
+                this.init();
             }
-        }
 
-        // Инициализация камеры
-        async function initCamera() {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment' }
-            });
-            
-            const video = document.getElementById('videoContainer');
-            video.srcObject = stream;
-            video.style.transform = 'scaleX(1)';
-            
-            return new Promise(resolve => {
-                video.onloadedmetadata = () => {
-                    video.play();
-                    document.getElementById('loader').style.display = 'none';
-                    resolve();
-                };
-            });
-        }
+            async init() {
+                // Создание сцены
+                this.scene = new BABYLON.Scene(this.engine);
+                this.scene.gravity = new BABYLON.Vector3(0, -9.81, 0);
+                this.scene.enablePhysics(null, new BABYLON.CannonJSPlugin());
 
-        // Инициализация Three.js
-        function initThreeJS() {
-            scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
-            
-            renderer = new THREE.WebGLRenderer({ 
-                alpha: true,
-                antialias: true
-            });
-            
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
-            document.getElementById('canvasContainer').appendChild(renderer.domElement);
+                // Камера и свет
+                this.setupCameraAndLight();
+                
+                // Настройка AR
+                await this.setupAR();
 
-            // Освещение
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
-            scene.add(ambientLight);
-        }
+                // Загрузка моделей
+                await this.preloadModels();
 
-        // Создание виртуальной плоскости
-        function createPlane() {
-            const planeGeometry = new THREE.PlaneGeometry(planeSize, planeSize);
-            const planeMaterial = new THREE.MeshBasicMaterial({
-                visible: false
-            });
-            
-            planeMesh = new THREE.Mesh(planeGeometry, planeMaterial);
-            planeMesh.rotation.x = -Math.PI / 2;
-            scene.add(planeMesh);
-        }
+                // Интерфейс
+                this.setupUI();
 
-        // Обработка жестов
-        function initGestures() {
-            const hammer = new Hammer(document.body);
-            hammer.get('press').set({ time: 800 });
-            
-            hammer.on('press', e => {
-                if (!isPlaneDetected) {
-                    detectPlane(e.center);
-                } else {
-                    spawnAnimal(e.center);
+                // Главный цикл
+                this.engine.runRenderLoop(() => this.scene.render());
+            }
+
+            setupCameraAndLight() {
+                // Камера
+                this.camera = new BABYLON.UniversalCamera("camera", new BABYLON.Vector3(0, 1.6, 0), this.scene);
+                this.camera.minZ = 0.1;
+
+                // Освещение
+                new BABYLON.HemisphericLight("light1", new BABYLON.Vector3(1, 1, 0), this.scene);
+                new BABYLON.DirectionalLight("light2", new BABYLON.Vector3(0, -1, 1), this.scene);
+            }
+
+            async setupAR() {
+                // Инициализация WebXR
+                this.xr = await this.scene.createDefaultXRExperienceAsync({
+                    uiOptions: {
+                        sessionMode: "immersive-ar",
+                        referenceSpaceType: "local-floor"
+                    }
+                });
+
+                // Детекция плоскостей
+                this.xr.baseExperience.featuresManager.enableFeature(BABYLON.WebXRPlaneDetector, "latest");
+                
+                // Обработка касаний
+                this.xr.input.onControllerAddedObservable.add(controller => {
+                    controller.onMotionControllerInitObservable.add(motionController => {
+                        motionController.getComponent("trigger").onButtonStateChangedObservable.add(() => {
+                            this.spawnAnimal();
+                        });
+                    });
+                });
+            }
+
+            async preloadModels() {
+                // Загрузка моделей животных
+                for (const type in ANIMAL_TYPES) {
+                    const result = await BABYLON.SceneLoader.ImportMeshAsync(
+                        "", 
+                        "models/", 
+                        ANIMAL_TYPES[type].file, 
+                        this.scene
+                    );
+                    
+                    // Создание пула объектов
+                    const proto = result.meshes[0];
+                    proto.setEnabled(false);
+                    this.animalPool.push({ proto, type });
                 }
-            });
-        }
+            }
 
-        // Детекция плоскости
-        function detectPlane(touchPos) {
-            const raycaster = new THREE.Raycaster();
-            const mouse = getNormalizedMousePos(touchPos);
-            
-            raycaster.setFromCamera(mouse, camera);
-            const intersects = raycaster.intersectObjects([planeMesh]);
+            spawnAnimal() {
+                if (this.animalPool.length === 0) return;
 
-            if (intersects.length > 0) {
-                isPlaneDetected = true;
-                createPlane();
-                adjustPlanePosition(intersects[0].point);
-                showPlaneMarker(true);
-                hapticFeedback();
+                // Получение случайного животного из пула
+                const { proto, type } = this.animalPool.pop();
+                const animal = proto.clone(`${type}_${Date.now()}`, null);
+                
+                // Позиционирование
+                const hitPos = this.getRandomPlanePosition();
+                animal.position = hitPos.add(new BABYLON.Vector3(
+                    Math.random() * 2 - 1,
+                    0,
+                    Math.random() * 2 - 1
+                ));
+
+                // Настройка физики
+                animal.physicsImpostor = new BABYLON.PhysicsImpostor(
+                    animal,
+                    BABYLON.PhysicsImpostor.MeshImpostor,
+                    { mass: 1, friction: 0.5 }
+                );
+
+                // Анимация
+                this.setupAnimalAnimation(animal);
+
+                this.animals.push(animal);
+                document.getElementById('counter').textContent = this.animals.length;
+            }
+
+            getRandomPlanePosition() {
+                // Получение случайной плоскости
+                const planes = this.xr.baseExperience.featuresManager.getEnabledFeature(
+                    BABYLON.WebXRPlaneDetector
+                ).planes;
+                
+                return planes[Math.floor(Math.random() * planes.length)].position;
+            }
+
+            setupAnimalAnimation(animal) {
+                // Простая анимация
+                let angle = 0;
+                this.scene.registerBeforeRender(() => {
+                    angle += 0.02;
+                    animal.rotation.y = Math.sin(angle) * 0.5;
+                });
+            }
+
+            setupUI() {
+                // Кнопка запуска AR
+                const btn = document.createElement('button');
+                btn.textContent = 'Start AR';
+                btn.style.position = 'fixed';
+                btn.style.bottom = '20px';
+                btn.style.left = '50%';
+                btn.style.transform = 'translateX(-50%)';
+                btn.onclick = () => this.xr.baseExperience.enterXRAsync();
+                document.body.appendChild(btn);
             }
         }
 
-        // Спавн зверя
-        function spawnAnimal(touchPos) {
-            const mouse = getNormalizedMousePos(touchPos);
-            const raycaster = new THREE.Raycaster();
-            raycaster.setFromCamera(mouse, camera);
-            
-            const intersects = raycaster.intersectObject(planeMesh);
-            if (intersects.length > 0) {
-                const animal = animals[Math.floor(Math.random() * animals.length)];
-                createAnimal(animal, intersects[0].point);
-                updateScore();
-                hapticFeedback();
-            }
-        }
-
-        // Создание 3D-модели зверя
-        function createAnimal(animalType, position) {
-            if (currentAnimal) scene.remove(currentAnimal);
-            
-            const geometry = new THREE.SphereGeometry(animalType.scale, 32, 32);
-            const material = new THREE.MeshPhongMaterial({
-                color: animalType.color,
-                transparent: true,
-                opacity: 0.9
-            });
-            
-            currentAnimal = new THREE.Mesh(geometry, material);
-            currentAnimal.position.copy(position);
-            currentAnimal.position.y += animalType.scale;
-            scene.add(currentAnimal);
-        }
-
-        // Вспомогательные функции
-        function getNormalizedMousePos(pos) {
-            return new THREE.Vector2(
-                (pos.x / window.innerWidth) * 2 - 1,
-                -(pos.y / window.innerHeight) * 2 + 1
-            );
-        }
-
-        function adjustPlanePosition(point) {
-            planeMesh.position.copy(point);
-            planeMesh.position.y += 0.1;
-        }
-
-        function showPlaneMarker(show) {
-            const marker = document.getElementById('plane-marker');
-            marker.style.display = show ? 'block' : 'none';
-            if (show) {
-                marker.style.left = `${window.innerWidth/2 - 25}px`;
-                marker.style.top = `${window.innerHeight/2 - 25}px`;
-            }
-        }
-
-        function showPlaneDetectionHint() {
-            const hint = document.createElement('div');
-            hint.style.position = 'fixed';
-            hint.style.bottom = '20px';
-            hint.style.width = '100%';
-            hint.style.textAlign = 'center';
-            hint.style.color = 'white';
-            hint.innerHTML = 'Нажмите и удерживайте для обнаружения плоскости';
-            document.body.appendChild(hint);
-            
-            setTimeout(() => hint.remove(), 5000);
-        }
-
-        function hapticFeedback() {
-            if (navigator.vibrate) navigator.vibrate(30);
-        }
-
-        function updateScore() {
-            score++;
-            document.getElementById('score').textContent = score;
-            localStorage.setItem('arScore', score);
-        }
-
-        function loadProgress() {
-            const savedScore = localStorage.getItem('arScore');
-            if (savedScore) {
-                score = parseInt(savedScore);
-                document.getElementById('score').textContent = score;
-            }
-        }
-
-        // Анимация
-        function animate() {
-            requestAnimationFrame(animate);
-            
-            if (currentAnimal) {
-                currentAnimal.rotation.y += 0.02;
-                currentAnimal.position.y = 
-                    Math.sin(Date.now() * 0.002) * 0.2 + planeMesh.position.y + 0.3;
-            }
-            
-            renderer.render(scene, camera);
-        }
-
-        // Запуск приложения
-        window.addEventListener('load', () => {
-            initGame();
-            animate();
-        });
-
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
+        // Запуск игры
+        window.addEventListener('load', () => new Game());
     </script>
 </body>
 </html>
