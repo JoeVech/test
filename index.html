@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AR Звери (Фикс камеры)</title>
+    <title>AR Camera</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
         body {
@@ -9,13 +9,27 @@
             overflow: hidden;
             background: #000;
         }
-        #arScene {
-            width: 100vw;
-            height: 100vh;
+
+        #videoContainer {
             position: fixed;
             top: 0;
             left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
         }
+
+        #canvasContainer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+        }
+
         .loader {
             position: fixed;
             top: 50%;
@@ -26,141 +40,87 @@
             text-align: center;
             z-index: 1000;
         }
-        #map {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            width: 200px;
-            height: 200px;
-            border-radius: 15px;
-            box-shadow: 0 0 15px rgba(0,0,0,0.5);
-        }
     </style>
-
-    <!-- Библиотеки -->
-    <script src="https://cdn.jsdelivr.net/npm/aframe@1.4.2/dist/aframe.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/gh/aframevr/ar.js@150bd08/data/libs/threex/threex-arbasecontrols.js"></script>
-    <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.7/aframe/build/aframe-ar-nft.min.js"></script>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 </head>
 <body>
-    <div class="loader" id="loader">Инициализация AR...</div>
-    <div id="map"></div>
+    <div class="loader" id="loader">Инициализация камеры...</div>
+    <video id="videoContainer" autoplay playsinline muted></video>
+    <div id="canvasContainer"></div>
 
-    <a-scene 
-        id="arScene"
-        vr-mode-ui="enabled: false"
-        embedded
-        arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false; detectionMode: mono;"
-        renderer="logarithmicDepthBuffer: true; precision: medium;"
-        gesture-detector
-    >
-        <a-camera 
-            gps-camera 
-            rotation-reader 
-            look-controls="enabled: false"
-            arjs-device-orientation-controls="smoothingFactor: 0.8; orientationOffset: 90"
-        ></a-camera>
-
-        <a-entity 
-            class="animal"
-            gltf-model="https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models@master/2.0/Duck/glTF/Duck.gltf"
-            scale="0.5 0.5 0.5"
-            gps-entity-place="latitude: 44.952116; longitude: 34.102411;"
-            animation-mixer
-            visible="false"
-        ></a-entity>
-    </a-scene>
+    <!-- Three.js из альтернативного CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
     <script>
-        // Telegram WebApp инициализация
-        if (typeof Telegram !== 'undefined' && Telegram.WebApp) {
+        // Инициализация Telegram Web App
+        if (typeof Telegram !== 'undefined') {
             Telegram.WebApp.ready();
             Telegram.WebApp.expand();
-            Telegram.WebApp.enableClosingConfirmation();
         }
 
-        // Явный запрос разрешения камеры
-        async function initCamera() {
+        // Настройка камеры
+        const initCamera = async () => {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: {
-                        facingMode: { exact: "environment" },
+                        facingMode: 'environment',
                         width: { ideal: 1280 },
                         height: { ideal: 720 }
                     }
                 });
-                
-                // Для дебага: показ видео-потока
-                const testVideo = document.createElement('video');
-                testVideo.srcObject = stream;
-                testVideo.play();
-                testVideo.style.position = 'fixed';
-                testVideo.style.top = '10px';
-                testVideo.style.left = '10px';
-                testVideo.style.width = '200px';
-                testVideo.style.zIndex = '10000';
-                document.body.appendChild(testVideo);
 
-                return stream;
-                
+                const video = document.getElementById('videoContainer');
+                video.srcObject = stream;
+                video.style.transform = 'scaleX(1)';
+
+                // Инициализация Three.js после загрузки видео
+                video.onloadedmetadata = () => {
+                    initThreeJS();
+                    document.getElementById('loader').style.display = 'none';
+                };
             } catch (error) {
-                let message = 'Ошибка камеры: ';
-                if (error.name === 'NotAllowedError') {
-                    message += 'Доступ запрещен! Разрешите камеру в настройках браузера';
-                } else if (error.name === 'NotFoundError') {
-                    message += 'Камера не найдена!';
-                } else {
-                    message += error.message;
-                }
-                throw new Error(message);
-            }
-        }
-
-        // Основная инициализация
-        async function initAR() {
-            try {
-                // Инициализация камеры перед всеми действиями
-                const stream = await initCamera();
-                
-                // Инициализация AR-сцены
-                const scene = document.querySelector('a-scene');
-                scene.systems.arjs.updateVideoSrc(stream);
-                
-                // Инициализация карты
-                const map = L.map('map').setView([44.952116, 34.102411], 15);
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-
-                document.getElementById('loader').style.display = 'none';
-
-                // Показать объект через 1 сек
-                setTimeout(() => {
-                    document.querySelector('.animal').setAttribute('visible', 'true');
-                }, 1000);
-
-            } catch (error) {
-                console.error('Ошибка:', error);
                 document.getElementById('loader').innerHTML = `
-                    <div style="color: red; background: rgba(0,0,0,0.8); padding: 20px; border-radius: 10px;">
-                        ${error.message}<br><br>
-                        <button onclick="window.location.reload()" 
-                            style="padding: 10px; background: #fff; border: none; border-radius: 5px; margin-top: 10px;">
-                            Обновить страницу
-                        </button>
+                    <div style="color: red">
+                        Ошибка доступа к камере!<br>
+                        ${error.name}: ${error.message}<br>
+                        Пожалуйста:<br>
+                        1. Проверьте разрешения<br>
+                        2. Перезагрузите страницу
                     </div>`;
             }
-        }
+        };
 
-        // Запуск после полной загрузки
-        window.addEventListener('DOMContentLoaded', () => {
-            // Блокировка Web3
-            delete window.ethereum;
-            delete window.web3;
+        // Инициализация Three.js
+        const initThreeJS = () => {
+            const container = document.getElementById('canvasContainer');
 
-            // Явный запуск AR
-            initAR();
-        });
+            // Создание сцены
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer({ alpha: true });
+
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+
+            // Добавление 3D объекта
+            const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+            const material = new THREE.MeshBasicMaterial({ color: 0x4CC3D9 });
+            const cube = new THREE.Mesh(geometry, material);
+            scene.add(cube);
+
+            camera.position.z = 2;
+
+            // Анимация
+            const animate = () => {
+                requestAnimationFrame(animate);
+                cube.rotation.x += 0.01;
+                cube.rotation.y += 0.01;
+                renderer.render(scene, camera);
+            };
+            animate();
+        };
+
+        // Запуск при загрузке
+        window.addEventListener('load', initCamera);
     </script>
 </body>
 </html>
