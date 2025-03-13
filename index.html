@@ -1,13 +1,14 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AR Camera</title>
+    <title>AR Охота на зверей</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
         body {
             margin: 0;
             overflow: hidden;
             background: #000;
+            font-family: 'Arial', sans-serif;
         }
 
         #videoContainer {
@@ -36,28 +37,65 @@
             left: 50%;
             transform: translate(-50%, -50%);
             color: white;
-            font-family: Arial;
             text-align: center;
             z-index: 1000;
+        }
+
+        .hud {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 10px;
+            z-index: 1000;
+        }
+
+        .catch-button {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 15px 30px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 18px;
+            cursor: pointer;
+            z-index: 1000;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
         }
     </style>
 </head>
 <body>
-    <div class="loader" id="loader">Инициализация камеры...</div>
+    <div class="loader" id="loader">Поиск зверей вокруг вас...</div>
     <video id="videoContainer" autoplay playsinline muted></video>
     <div id="canvasContainer"></div>
+    <div class="hud" id="hud">
+        Поймано: <span id="score">0</span><br>
+        Уровень: 1
+    </div>
+    <button class="catch-button" id="catchButton">Поймать!</button>
 
-    <!-- Three.js из альтернативного CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.js"></script>
 
     <script>
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+        let score = 0;
+        let animals = [];
+        let currentAnimal = null;
+
         // Инициализация Telegram Web App
         if (typeof Telegram !== 'undefined') {
             Telegram.WebApp.ready();
             Telegram.WebApp.expand();
         }
 
-        // Настройка камеры
         const initCamera = async () => {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
@@ -70,9 +108,7 @@
 
                 const video = document.getElementById('videoContainer');
                 video.srcObject = stream;
-                video.style.transform = 'scaleX(1)';
 
-                // Инициализация Three.js после загрузки видео
                 video.onloadedmetadata = () => {
                     initThreeJS();
                     document.getElementById('loader').style.display = 'none';
@@ -81,46 +117,107 @@
                 document.getElementById('loader').innerHTML = `
                     <div style="color: red">
                         Ошибка доступа к камере!<br>
-                        ${error.name}: ${error.message}<br>
-                        Пожалуйста:<br>
-                        1. Проверьте разрешения<br>
-                        2. Перезагрузите страницу
+                        ${error.name}: ${error.message}
                     </div>`;
             }
         };
 
-        // Инициализация Three.js
         const initThreeJS = () => {
             const container = document.getElementById('canvasContainer');
-
-            // Создание сцены
+            
             const scene = new THREE.Scene();
             const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-            const renderer = new THREE.WebGLRenderer({ alpha: true });
+            const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
 
             renderer.setSize(window.innerWidth, window.innerHeight);
             container.appendChild(renderer.domElement);
 
-            // Добавление 3D объекта
-            const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-            const material = new THREE.MeshBasicMaterial({ color: 0x4CC3D9 });
-            const cube = new THREE.Mesh(geometry, material);
-            scene.add(cube);
+            // Освещение
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            directionalLight.position.set(0, 1, 0);
+            scene.add(directionalLight);
 
-            camera.position.z = 2;
+            // Загрузка модели зверя
+            new THREE.GLTFLoader().load(
+                'https://threejs.org/examples/models/gltf/Parrot.glb',
+                (gltf) => {
+                    currentAnimal = gltf.scene;
+                    currentAnimal.scale.set(0.5, 0.5, 0.5);
+                    currentAnimal.position.set(
+                        Math.random() * 4 - 2,
+                        -1,
+                        Math.random() * 3 + 2
+                    );
+                    scene.add(currentAnimal);
+                    animateEntrance(currentAnimal);
+                }
+            );
+
+            camera.position.set(0, 0, 2);
 
             // Анимация
             const animate = () => {
                 requestAnimationFrame(animate);
-                cube.rotation.x += 0.01;
-                cube.rotation.y += 0.01;
+                TWEEN.update();
+                if(currentAnimal) currentAnimal.rotation.y += 0.01;
                 renderer.render(scene, camera);
             };
             animate();
+
+            // Обработка кликов
+            document.getElementById('catchButton').addEventListener('click', () => {
+                if(currentAnimal) {
+                    animateCatch(currentAnimal);
+                    score++;
+                    document.getElementById('score').textContent = score;
+                    setTimeout(spawnNewAnimal, 1500);
+                }
+            });
         };
 
-        // Запуск при загрузке
+        const animateEntrance = (obj) => {
+            new TWEEN.Tween(obj.scale)
+                .from({ x: 0, y: 0, z: 0 })
+                .to({ x: 0.5, y: 0.5, z: 0.5 }, 1000)
+                .easing(TWEEN.Easing.Elastic.Out)
+                .start();
+        };
+
+        const animateCatch = (obj) => {
+            new TWEEN.Tween(obj.position)
+                .to({ y: obj.position.y + 2 }, 500)
+                .easing(TWEEN.Easing.Exponential.In)
+                .start();
+
+            new TWEEN.Tween(obj.scale)
+                .to({ x: 0, y: 0, z: 0 }, 500)
+                .easing(TWEEN.Easing.Exponential.In)
+                .onComplete(() => {
+                    obj.parent.remove(obj);
+                })
+                .start();
+        };
+
+        const spawnNewAnimal = () => {
+            // Здесь можно добавить загрузку разных моделей
+            currentAnimal = currentAnimal.clone();
+            currentAnimal.position.set(
+                Math.random() * 4 - 2,
+                -1,
+                Math.random() * 3 + 2
+            );
+            scene.add(currentAnimal);
+            animateEntrance(currentAnimal);
+        };
+
         window.addEventListener('load', initCamera);
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
     </script>
 </body>
 </html>
