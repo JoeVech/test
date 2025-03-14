@@ -5,148 +5,215 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        /* Стили остаются без изменений */
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: transparent;
+            touch-action: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #hud {
+            position: fixed; 
+            top: max(env(safe-area-inset-top, 20px), 20px); 
+            left: 20px; 
+            color: #fff; 
+            padding: 15px; 
+            z-index: 1000;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: rgba(0,0,0,0.6);
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        .controls {
+            position: fixed;
+            bottom: calc(env(safe-area-inset-bottom, 30px) + 40px);
+            right: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        .control-btn {
+            width: 56px;
+            height: 56px;
+            border-radius: 28px;
+            background: #3390ec;
+            border: none;
+            color: white;
+            font-size: 24px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            touch-action: manipulation;
+        }
     </style>
 </head>
 <body>
-    <!-- HTML-структура остается прежней -->
-    
+    <div id="hud">
+        🎯 Поймано: <span id="score">0</span><br>
+        🌟 Рядом: <span id="nearby">0</span>
+    </div>
+    <div class="controls" id="controls">
+        <button class="control-btn" id="left">←</button>
+        <button class="control-btn" id="right">→</button>
+    </div>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
         const tg = window.Telegram.WebApp;
         let scene, camera, renderer;
         let animals = [];
         let score = 0;
+        let basePosition = null;
         let watchId = null;
 
-        // Конфигурация
         const config = {
-            SPAWN_RADIUS: 150,
-            MAX_ANIMALS: 15,
+            SPAWN_RADIUS: 100,
+            MAX_ANIMALS: 20,
             CATCH_DISTANCE: 15,
-            CAMERA_HEIGHT: 2,
-            INITIAL_POSITION: new THREE.Vector3(0, 2, 5)
+            POOL_SIZE: 30,
+            ANIMAL_SCALE: 2,
+            MOVE_SPEED: 0.1
         };
 
-        // Инициализация Three.js
+        class GeoUtils {
+            static toMeters(lat, lon, refLat, refLon) {
+                const R = 6378137;
+                const dLat = lat - refLat;
+                const dLon = lon - refLon;
+                return {
+                    x: R * dLon * Math.PI/180 * Math.cos(refLat * Math.PI/180),
+                    z: R * dLat * Math.PI/180
+                };
+            }
+        }
+
         function initScene() {
             scene = new THREE.Scene();
             
-            // Камера
             camera = new THREE.PerspectiveCamera(
-                75, 
-                window.innerWidth / window.innerHeight, 
-                0.1, 
+                75,
+                window.innerWidth / window.innerHeight,
+                0.1,
                 1000
             );
-            camera.position.copy(config.INITIAL_POSITION);
+            camera.position.set(0, 10, 20);
             camera.lookAt(0, 0, 0);
             
-            // Рендерер
-            renderer = new THREE.WebGLRenderer({ 
+            renderer = new THREE.WebGLRenderer({
                 alpha: true,
-                antialias: true
+                antialias: true,
+                powerPreference: "low-power"
             });
             renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
             document.body.appendChild(renderer.domElement);
             
-            // Освещение
             const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
             scene.add(light);
         }
 
-        // Инициализация геолокации
         function initGeolocation() {
             if (!navigator.geolocation) {
-                tg.showAlert("Geolocation is not supported");
+                tg.showAlert("Геолокация не поддерживается вашим устройством");
                 return;
             }
 
             tg.showPopup({
-                title: 'Доступ к геолокации',
-                message: 'Приложению нужен доступ к вашему местоположению',
+                title: 'Доступ к местоположению',
+                message: 'Для игры требуется доступ к вашей геопозиции',
                 buttons: [{
                     type: 'ok',
                     id: 'geo-ok'
                 }]
             });
 
-            tg.onEvent('popupClosed', (event) => {
-                if (event.button_id === 'geo-ok') {
-                    startWatchingPosition();
+            tg.onEvent('popupClosed', (e) => {
+                if (e.button_id === 'geo-ok') {
+                    watchId = navigator.geolocation.watchPosition(
+                        handlePositionUpdate,
+                        handleGeoError,
+                        {
+                            enableHighAccuracy: true,
+                            maximumAge: 3000,
+                            timeout: 10000
+                        }
+                    );
                 }
             });
         }
 
-        // Начало отслеживания позиции
-        function startWatchingPosition() {
-            watchId = navigator.geolocation.watchPosition(
-                position => handlePositionUpdate(position),
-                error => handleGeoError(error),
-                {
-                    enableHighAccuracy: true,
-                    maximumAge: 3000,
-                    timeout: 10000
-                }
-            );
-        }
-
-        // Обработка обновления позиции
         function handlePositionUpdate(position) {
-            const coords = position.coords;
-            updateCameraPosition(coords);
-            spawnAnimals(coords);
-            checkCollisions(coords);
-        }
-
-        // Обновление позиции камеры
-        function updateCameraPosition(coords) {
-            // Преобразование координат в 3D-пространство
-            camera.position.x = coords.longitude * 1000;
-            camera.position.z = -coords.latitude * 1000;
-            camera.lookAt(new THREE.Vector3(
-                camera.position.x,
-                config.CAMERA_HEIGHT,
-                camera.position.z - 10
-            ));
-        }
-
-        // Генерация животных
-        function spawnAnimals(coords) {
-            if (animals.length >= config.MAX_ANIMALS) return;
-
-            const geometry = new THREE.SphereGeometry(0.5);
-            const material = new THREE.MeshPhongMaterial({color: 0xff0000});
+            if (!basePosition) {
+                basePosition = {
+                    latitude: position.coords.latitude,
+                    longitude: position.coords.longitude
+                };
+            }
             
-            for (let i = 0; i < 3; i++) {
-                const animal = new THREE.Mesh(geometry, material);
+            updateCamera(position.coords);
+            spawnAnimals(position.coords);
+            checkCollisions(position.coords);
+            updateUI();
+        }
+
+        function updateCamera(coords) {
+            const pos = GeoUtils.toMeters(
+                coords.latitude,
+                coords.longitude,
+                basePosition.latitude,
+                basePosition.longitude
+            );
+            
+            camera.position.x = pos.x;
+            camera.position.z = pos.z;
+            camera.lookAt(pos.x, 0, pos.z - 10);
+        }
+
+        function spawnAnimals(coords) {
+            while (animals.length < config.MAX_ANIMALS) {
+                const lat = coords.latitude + (Math.random() - 0.5) * 0.001;
+                const lon = coords.longitude + (Math.random() - 0.5) * 0.001;
                 
-                // Случайная позиция вокруг игрока
-                animal.position.set(
-                    camera.position.x + (Math.random() - 0.5) * config.SPAWN_RADIUS,
-                    config.CAMERA_HEIGHT,
-                    camera.position.z + (Math.random() - 0.5) * config.SPAWN_RADIUS
+                const animal = createAnimal();
+                const pos = GeoUtils.toMeters(
+                    lat,
+                    lon,
+                    basePosition.latitude,
+                    basePosition.longitude
                 );
                 
-                scene.add(animal);
-                animals.push({
-                    mesh: animal,
-                    coords: {
-                        latitude: coords.latitude + (Math.random() - 0.5) * 0.001,
-                        longitude: coords.longitude + (Math.random() - 0.5) * 0.001
-                    }
-                });
+                animal.position.set(pos.x, 0, pos.z);
+                animal.rotation.y = Math.random() * Math.PI * 2;
+                animals.push(animal);
             }
         }
 
-        // Проверка столкновений
+        function createAnimal() {
+            const geometry = new THREE.ConeGeometry(1, 2, 8);
+            const material = new THREE.MeshPhongMaterial({
+                color: 0x3390ec,
+                transparent: true,
+                opacity: 0.9
+            });
+            const mesh = new THREE.Mesh(geometry, material);
+            scene.add(mesh);
+            return mesh;
+        }
+
         function checkCollisions(coords) {
+            const currentPos = GeoUtils.toMeters(
+                coords.latitude,
+                coords.longitude,
+                basePosition.latitude,
+                basePosition.longitude
+            );
+
             animals = animals.filter(animal => {
-                const distance = getDistance(coords, animal.coords);
+                const dx = animal.position.x - currentPos.x;
+                const dz = animal.position.z - currentPos.z;
+                const distance = Math.sqrt(dx*dx + dz*dz);
+
                 if (distance < config.CATCH_DISTANCE) {
-                    scene.remove(animal.mesh);
+                    scene.remove(animal);
                     score++;
-                    document.getElementById('score').textContent = score;
                     tg.HapticFeedback.impactOccurred('light');
                     return false;
                 }
@@ -154,53 +221,54 @@
             });
         }
 
-        // Расчет расстояния
-        function getDistance(pos1, pos2) {
-            const R = 6371e3; // Earth radius in meters
-            const φ1 = pos1.latitude * Math.PI/180;
-            const φ2 = pos2.latitude * Math.PI/180;
-            const Δφ = (pos2.latitude - pos1.latitude) * Math.PI/180;
-            const Δλ = (pos2.longitude - pos1.longitude) * Math.PI/180;
-
-            const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
-                      Math.cos(φ1) * Math.cos(φ2) *
-                      Math.sin(Δλ/2) * Math.sin(Δλ/2);
-            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        function updateUI() {
+            document.getElementById('score').textContent = score;
+            document.getElementById('nearby').textContent = animals.length;
         }
 
-        // Обработка ошибок
         function handleGeoError(error) {
-            let message = '';
+            let message = 'Неизвестная ошибка';
             switch(error.code) {
-                case 1: message = 'Разрешите доступ к геолокации'; break;
+                case 1: message = 'Доступ к геолокации запрещен'; break;
                 case 2: message = 'Не удалось определить местоположение'; break;
-                case 3: message = 'Тайм-аут запроса'; break;
+                case 3: message = 'Время запроса истекло'; break;
             }
             tg.showPopup({title: 'Ошибка', message, buttons: [{type: 'close'}]});
         }
 
-        // Анимация
         function animate() {
             requestAnimationFrame(animate);
-            renderer.render(scene, camera);
             
-            // Анимация животных
             animals.forEach(animal => {
-                animal.mesh.rotation.y += 0.02;
-                animal.mesh.position.y = 
-                    config.CAMERA_HEIGHT + Math.sin(Date.now() * 0.002) * 0.5;
+                animal.rotation.y += 0.02;
+                animal.position.y = Math.sin(Date.now() * 0.002) * 2;
             });
+            
+            renderer.render(scene, camera);
         }
 
-        // Инициализация
+        function initControls() {
+            const rotate = (dir) => {
+                camera.position.x += Math.sin(camera.rotation.y + dir) * config.MOVE_SPEED;
+                camera.position.z += Math.cos(camera.rotation.y + dir) * config.MOVE_SPEED;
+                camera.lookAt(0, 0, 0);
+            };
+
+            document.getElementById('left').addEventListener('touchstart', () => rotate(-Math.PI/2));
+            document.getElementById('right').addEventListener('touchstart', () => rotate(Math.PI/2));
+        }
+
         function init() {
             tg.ready();
             tg.expand();
+            tg.setHeaderColor('#3390ec');
+            tg.setBackgroundColor('#000000');
+            
             initScene();
             initGeolocation();
+            initControls();
             animate();
 
-            // Обработка изменения размеров
             tg.onEvent('viewportChanged', () => {
                 camera.aspect = window.innerWidth / window.innerHeight;
                 camera.updateProjectionMatrix();
