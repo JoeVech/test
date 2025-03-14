@@ -1,282 +1,126 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Telegram AR Hunt</title>
+    <title>AR Camera</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        body { 
-            margin: 0; 
-            overflow: hidden; 
-            background: transparent;
-            touch-action: none;
-            -webkit-tap-highlight-color: transparent;
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
         }
-        #hud {
-            position: fixed; 
-            top: max(env(safe-area-inset-top, 20px), 20px); 
-            left: 20px; 
-            color: #fff; 
-            padding: 15px; 
-            z-index: 1000;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: rgba(0,0,0,0.6);
-            border-radius: 15px;
-            backdrop-filter: blur(10px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        }
-        .controls {
+
+        #videoContainer {
             position: fixed;
-            bottom: calc(env(safe-area-inset-bottom, 30px) + 40px);
-            right: 20px;
-            display: flex;
-            gap: 10px;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
         }
-        .control-btn {
-            width: 56px;
-            height: 56px;
-            border-radius: 28px;
-            background: #3390ec;
-            border: none;
+
+        #canvasContainer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        .loader {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
             color: white;
-            font-size: 24px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-            touch-action: manipulation;
+            font-family: Arial;
+            text-align: center;
+            z-index: 1000;
         }
     </style>
 </head>
 <body>
-    <div id="hud">
-        🎯 Поймано: <span id="score">0</span><br>
-        🌟 Рядом: <span id="nearby">0</span>
-    </div>
-    <div class="controls" id="controls">
-        <button class="control-btn" id="left">←</button>
-        <button class="control-btn" id="right">→</button>
-    </div>
+    <div class="loader" id="loader">Инициализация камеры...</div>
+    <video id="videoContainer" autoplay playsinline muted></video>
+    <div id="canvasContainer"></div>
 
+    <!-- Three.js из альтернативного CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script>
-        const tg = window.Telegram.WebApp;
-        let scene, camera, renderer;
-        let animals = [];
-        let score = 0;
-        let basePosition = null;
-        let watchId = null;
 
-        const config = {
-            SPAWN_RADIUS: 100,
-            MAX_ANIMALS: 20,
-            CATCH_DISTANCE: 15,
-            POOL_SIZE: 30,
-            ANIMAL_SCALE: 2,
-            MOVE_SPEED: 0.1
+    <script>
+        // Инициализация Telegram Web App
+        if (typeof Telegram !== 'undefined') {
+            Telegram.WebApp.ready();
+            Telegram.WebApp.expand();
+        }
+
+        // Настройка камеры
+        const initCamera = async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                });
+
+                const video = document.getElementById('videoContainer');
+                video.srcObject = stream;
+                video.style.transform = 'scaleX(1)';
+
+                // Инициализация Three.js после загрузки видео
+                video.onloadedmetadata = () => {
+                    initThreeJS();
+                    document.getElementById('loader').style.display = 'none';
+                };
+            } catch (error) {
+                document.getElementById('loader').innerHTML = `
+                    <div style="color: red">
+                        Ошибка доступа к камере!<br>
+                        ${error.name}: ${error.message}<br>
+                        Пожалуйста:<br>
+                        1. Проверьте разрешения<br>
+                        2. Перезагрузите страницу
+                    </div>`;
+            }
         };
 
-        class GeoUtils {
-            static toMeters(lat, lon, refLat, refLon) {
-                const R = 6378137;
-                const dLat = lat - refLat;
-                const dLon = lon - refLon;
-                return {
-                    x: R * dLon * Math.PI/180 * Math.cos(refLat * Math.PI/180),
-                    z: R * dLat * Math.PI/180
-                };
-            }
-        }
+        // Инициализация Three.js
+        const initThreeJS = () => {
+            const container = document.getElementById('canvasContainer');
 
-        function initScene() {
-            scene = new THREE.Scene();
-            
-            camera = new THREE.PerspectiveCamera(
-                75,
-                window.innerWidth / window.innerHeight,
-                0.1,
-                1000
-            );
-            camera.position.set(0, 10, 20);
-            camera.lookAt(0, 0, 0);
-            
-            renderer = new THREE.WebGLRenderer({
-                alpha: true,
-                antialias: true,
-                powerPreference: "low-power"
-            });
+            // Создание сцены
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer({ alpha: true });
+
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
-            document.body.appendChild(renderer.domElement);
-            
-            const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
-            scene.add(light);
-        }
+            container.appendChild(renderer.domElement);
 
-        function initGeolocation() {
-            if (!navigator.geolocation) {
-                tg.showAlert("Геолокация не поддерживается вашим устройством");
-                return;
-            }
+            // Добавление 3D объекта
+            const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+            const material = new THREE.MeshBasicMaterial({ color: 0x4CC3D9 });
+            const cube = new THREE.Mesh(geometry, material);
+            scene.add(cube);
 
-            tg.showPopup({
-                title: 'Доступ к местоположению',
-                message: 'Для игры требуется доступ к вашей геопозиции',
-                buttons: [{
-                    type: 'ok',
-                    id: 'geo-ok'
-                }]
-            });
+            camera.position.z = 2;
 
-            tg.onEvent('popupClosed', (e) => {
-                if (e.button_id === 'geo-ok') {
-                    watchId = navigator.geolocation.watchPosition(
-                        handlePositionUpdate,
-                        handleGeoError,
-                        {
-                            enableHighAccuracy: true,
-                            maximumAge: 3000,
-                            timeout: 10000
-                        }
-                    );
-                }
-            });
-        }
-
-        function handlePositionUpdate(position) {
-            if (!basePosition) {
-                basePosition = {
-                    latitude: position.coords.latitude,
-                    longitude: position.coords.longitude
-                };
-            }
-            
-            updateCamera(position.coords);
-            spawnAnimals(position.coords);
-            checkCollisions(position.coords);
-            updateUI();
-        }
-
-        function updateCamera(coords) {
-            const pos = GeoUtils.toMeters(
-                coords.latitude,
-                coords.longitude,
-                basePosition.latitude,
-                basePosition.longitude
-            );
-            
-            camera.position.x = pos.x;
-            camera.position.z = pos.z;
-            camera.lookAt(pos.x, 0, pos.z - 10);
-        }
-
-        function spawnAnimals(coords) {
-            while (animals.length < config.MAX_ANIMALS) {
-                const lat = coords.latitude + (Math.random() - 0.5) * 0.001;
-                const lon = coords.longitude + (Math.random() - 0.5) * 0.001;
-                
-                const animal = createAnimal();
-                const pos = GeoUtils.toMeters(
-                    lat,
-                    lon,
-                    basePosition.latitude,
-                    basePosition.longitude
-                );
-                
-                animal.position.set(pos.x, 0, pos.z);
-                animal.rotation.y = Math.random() * Math.PI * 2;
-                animals.push(animal);
-            }
-        }
-
-        function createAnimal() {
-            const geometry = new THREE.ConeGeometry(1, 2, 8);
-            const material = new THREE.MeshPhongMaterial({
-                color: 0x3390ec,
-                transparent: true,
-                opacity: 0.9
-            });
-            const mesh = new THREE.Mesh(geometry, material);
-            scene.add(mesh);
-            return mesh;
-        }
-
-        function checkCollisions(coords) {
-            const currentPos = GeoUtils.toMeters(
-                coords.latitude,
-                coords.longitude,
-                basePosition.latitude,
-                basePosition.longitude
-            );
-
-            animals = animals.filter(animal => {
-                const dx = animal.position.x - currentPos.x;
-                const dz = animal.position.z - currentPos.z;
-                const distance = Math.sqrt(dx*dx + dz*dz);
-
-                if (distance < config.CATCH_DISTANCE) {
-                    scene.remove(animal);
-                    score++;
-                    tg.HapticFeedback.impactOccurred('light');
-                    return false;
-                }
-                return true;
-            });
-        }
-
-        function updateUI() {
-            document.getElementById('score').textContent = score;
-            document.getElementById('nearby').textContent = animals.length;
-        }
-
-        function handleGeoError(error) {
-            let message = 'Неизвестная ошибка';
-            switch(error.code) {
-                case 1: message = 'Доступ к геолокации запрещен'; break;
-                case 2: message = 'Не удалось определить местоположение'; break;
-                case 3: message = 'Время запроса истекло'; break;
-            }
-            tg.showPopup({title: 'Ошибка', message, buttons: [{type: 'close'}]});
-        }
-
-        function animate() {
-            requestAnimationFrame(animate);
-            
-            animals.forEach(animal => {
-                animal.rotation.y += 0.02;
-                animal.position.y = Math.sin(Date.now() * 0.002) * 2;
-            });
-            
-            renderer.render(scene, camera);
-        }
-
-        function initControls() {
-            const rotate = (dir) => {
-                camera.position.x += Math.sin(camera.rotation.y + dir) * config.MOVE_SPEED;
-                camera.position.z += Math.cos(camera.rotation.y + dir) * config.MOVE_SPEED;
-                camera.lookAt(0, 0, 0);
+            // Анимация
+            const animate = () => {
+                requestAnimationFrame(animate);
+                cube.rotation.x += 0.01;
+                cube.rotation.y += 0.01;
+                renderer.render(scene, camera);
             };
-
-            document.getElementById('left').addEventListener('touchstart', () => rotate(-Math.PI/2));
-            document.getElementById('right').addEventListener('touchstart', () => rotate(Math.PI/2));
-        }
-
-        function init() {
-            tg.ready();
-            tg.expand();
-            tg.setHeaderColor('#3390ec');
-            tg.setBackgroundColor('#000000');
-            
-            initScene();
-            initGeolocation();
-            initControls();
             animate();
+        };
 
-            tg.onEvent('viewportChanged', () => {
-                camera.aspect = window.innerWidth / window.innerHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(window.innerWidth, window.innerHeight);
-            });
-        }
-
-        init();
+        // Запуск при загрузке
+        window.addEventListener('load', initCamera);
     </script>
 </body>
 </html>
