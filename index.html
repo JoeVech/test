@@ -1,183 +1,308 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AR Охота на зверей</title>
+    <title>Telegram AR Hunt</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        body {
-            margin: 0;
-            overflow: hidden;
-            background: #000;
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: transparent;
             touch-action: none;
+            -webkit-tap-highlight-color: transparent;
         }
-
-        #videoContainer {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            z-index: 1;
-        }
-
-        #canvasContainer {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 2;
-            pointer-events: none;
-        }
-
-        .hud {
-            position: fixed;
-            top: 20px;
-            left: 20px;
-            color: white;
-            background: rgba(0,0,0,0.7);
-            padding: 10px;
-            border-radius: 10px;
+        #hud {
+            position: fixed; 
+            top: max(env(safe-area-inset-top, 20px), 20px); 
+            left: 20px; 
+            color: #fff; 
+            padding: 12px; 
             z-index: 1000;
-            font-family: Arial;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            text-shadow: 1px 1px 3px rgba(0,0,0,0.3);
+            background: rgba(0,0,0,0.5);
+            border-radius: 12px;
+            backdrop-filter: blur(10px);
         }
-
-        .catch-button {
+        .controls {
             position: fixed;
-            bottom: 30px;
-            left: 50%;
-            transform: translateX(-50%);
-            padding: 15px 30px;
-            background: #4CAF50;
-            color: white;
-            border: none;
+            bottom: calc(env(safe-area-inset-bottom, 30px) + 30px);
+            right: 20px;
+            display: none;
+            gap: 8px;
+        }
+        .control-btn {
+            width: 50px;
+            height: 50px;
             border-radius: 25px;
-            font-size: 16px;
-            cursor: pointer;
-            z-index: 1000;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            background: #3390ec;
+            border: none;
+            color: white;
+            font-size: 24px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
             touch-action: manipulation;
         }
     </style>
 </head>
 <body>
-    <div class="hud">
-        Поймано: <span id="score">0</span>
+    <div id="hud">
+        🎯 Поймано: <span id="score">0</span><br>
+        🌟 Рядом: <span id="nearby">0</span>
     </div>
-    <button class="catch-button" id="catchButton">Поймать!</button>
-    <video id="videoContainer" autoplay playsinline muted></video>
-    <div id="canvasContainer"></div>
+    <div class="controls" id="controls">
+        <button class="control-btn" id="left">←</button>
+        <button class="control-btn" id="right">→</button>
+    </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
-        let scene, camera, renderer, cube;
-        let score = 0;
-        const cubes = [];
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+        tg.enableClosingConfirmation();
+        tg.setHeaderColor('#3390ec');
+        tg.setBackgroundColor('#181818');
 
-        // Инициализация Telegram WebApp
-        if (typeof Telegram !== 'undefined') {
-            Telegram.WebApp.ready();
-            Telegram.WebApp.expand();
+        let scene, camera, renderer;
+        let animals = [];
+        let score = 0;
+        let yaw = 0;
+        let userPosition = null;
+        let isOrientationSupported = false;
+        
+        const config = {
+            SPAWN_RADIUS: 150,
+            MAX_ANIMALS: 15,
+            POOL_SIZE: 25,
+            CATCH_DISTANCE: 12,
+            FILTER_FACTOR: 0.3,
+            ROTATION_SPEED: 0.08
+        };
+
+        let animalPool = [];
+        let smoothedAlpha = 0;
+
+        function initScene() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, tg.viewportWidth / tg.viewportHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ 
+                alpha: true,
+                antialias: true,
+                powerPreference: "low-power"
+            });
+            
+            renderer.setSize(tg.viewportWidth, tg.viewportHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+            
+            initObjectPool();
         }
 
-        // Инициализация камеры
-        const initCamera = async () => {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: 'environment',
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    }
+        function initObjectPool() {
+            for (let i = 0; i < config.POOL_SIZE; i++) {
+                const geometry = new THREE.SphereGeometry(0.3, 12, 12);
+                const material = new THREE.MeshPhongMaterial({
+                    color: 0x3390ec,
+                    transparent: true,
+                    opacity: 0.9,
+                    visible: false
                 });
-
-                const video = document.getElementById('videoContainer');
-                video.srcObject = stream;
                 
-                video.onloadedmetadata = () => {
-                    initThreeJS();
-                    spawnCube();
+                const mesh = new THREE.Mesh(geometry, material);
+                scene.add(mesh);
+                
+                animalPool.push({
+                    mesh: mesh,
+                    active: false,
+                    lat: 0,
+                    lon: 0,
+                    caught: false
+                });
+            }
+            
+            const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+            scene.add(light);
+        }
+
+        function getAnimalFromPool() {
+            for (let animal of animalPool) {
+                if (!animal.active) {
+                    animal.active = true;
+                    animal.mesh.material.visible = true;
+                    return animal;
+                }
+            }
+            return null;
+        }
+
+        function releaseAnimal(animal) {
+            animal.active = false;
+            animal.caught = true;
+            animal.mesh.material.visible = false;
+            animal.mesh.position.set(0, -100, 0);
+        }
+
+        function checkOrientationSupport() {
+            isOrientationSupported = typeof DeviceOrientationEvent !== 'undefined' && 
+                !!DeviceOrientationEvent.requestPermission;
+            
+            document.getElementById('controls').style.display = isOrientationSupported ? 
+                'none' : 'flex';
+        }
+
+        function setupOrientation() {
+            if (!isOrientationSupported) return;
+
+            DeviceOrientationEvent.requestPermission()
+                .then(permission => {
+                    if (permission === 'granted') {
+                        window.addEventListener('deviceorientation', e => {
+                            smoothedAlpha = config.FILTER_FACTOR * e.alpha + 
+                                (1 - config.FILTER_FACTOR) * smoothedAlpha;
+                            camera.rotation.y = THREE.MathUtils.degToRad(smoothedAlpha - 180);
+                        }, true);
+                    }
+                })
+                .catch(console.error);
+        }
+
+        function setupManualControls() {
+            if (isOrientationSupported) return;
+
+            const rotate = (dir) => {
+                yaw += dir * config.ROTATION_SPEED;
+                camera.rotation.y = yaw;
+                navigator.vibrate?.(50);
+            };
+
+            document.getElementById('left').addEventListener('touchstart', () => rotate(1));
+            document.getElementById('right').addEventListener('touchstart', () => rotate(-1));
+        }
+
+        function startGeoTracking() {
+            if (!navigator.geolocation) {
+                tg.showPopup({
+                    title: 'Требуется геолокация',
+                    message: 'Пожалуйста, включите доступ к геопозиции',
+                    buttons: [{ type: 'close' }]
+                });
+                return;
+            }
+
+            navigator.geolocation.watchPosition(
+                position => {
+                    userPosition = {
+                        latitude: position.coords.latitude,
+                        longitude: position.coords.longitude
+                    };
+                    generateAnimals();
+                    updateAnimalsPosition();
+                    checkCollisions();
+                },
+                error => handleGeoError(error),
+                {
+                    enableHighAccuracy: true,
+                    maximumAge: 3000,
+                    timeout: 10000
+                }
+            );
+        }
+
+        function handleGeoError(error) {
+            tg.showPopup({
+                title: 'Ошибка геолокации',
+                message: 'Код ошибки: ' + error.code,
+                buttons: [{ type: 'close' }]
+            });
+        }
+
+        function generateAnimals() {
+            const needed = config.MAX_ANIMALS - animals.length;
+            
+            for (let i = 0; i < needed; i++) {
+                const animal = getAnimalFromPool();
+                if (!animal) break;
+
+                const distance = Math.random() * config.SPAWN_RADIUS;
+                const bearing = Math.random() * 360;
+                
+                const pos = {
+                    latitude: userPosition.latitude + (distance / 111320 * Math.cos(bearing * Math.PI/180)),
+                    longitude: userPosition.longitude + (distance / (111320 * Math.cos(userPosition.latitude * Math.PI/180)) * Math.sin(bearing * Math.PI/180))
                 };
-            } catch (error) {
-                alert('Разрешите доступ к камере для работы приложения!');
+
+                animal.lat = pos.latitude;
+                animal.lon = pos.longitude;
+                animals.push(animal);
             }
-        };
-
-        // Инициализация Three.js
-        const initThreeJS = () => {
-            scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 100);
-            renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            document.getElementById('canvasContainer').appendChild(renderer.domElement);
-
-            // Освещение
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
-            scene.add(ambientLight);
             
-            camera.position.set(0, 1.5, 3);
-            animate();
-        };
+            updateAnimalsDisplay();
+        }
 
-        // Создание куба
-        const createCube = (x, y, z) => {
-            const geometry = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-            const material = new THREE.MeshPhongMaterial({
-                color: 0x4CC3D9,
-                transparent: true,
-                opacity: 0.9
+        function updateAnimalsPosition() {
+            animals.forEach(animal => {
+                if (!animal.caught) {
+                    const dx = (animal.lon - userPosition.longitude) * 111320 * Math.cos(userPosition.latitude * Math.PI/180);
+                    const dz = (animal.lat - userPosition.latitude) * 111320;
+                    
+                    animal.mesh.position.x = dx / 10;
+                    animal.mesh.position.z = dz / 10;
+                    animal.mesh.rotation.y += 0.02;
+                }
+            });
+        }
+
+        function checkCollisions() {
+            animals = animals.filter(animal => {
+                if (animal.caught) {
+                    releaseAnimal(animal);
+                    return false;
+                }
+                
+                const dx = (animal.lon - userPosition.longitude) * 111320 * Math.cos(userPosition.latitude * Math.PI/180);
+                const dz = (animal.lat - userPosition.latitude) * 111320;
+                const distance = Math.sqrt(dx*dx + dz*dz);
+
+                if (distance < config.CATCH_DISTANCE) {
+                    releaseAnimal(animal);
+                    score++;
+                    document.getElementById('score').textContent = score;
+                    tg.HapticFeedback.impactOccurred('light');
+                    return false;
+                }
+                return true;
             });
             
-            const cube = new THREE.Mesh(geometry, material);
-            cube.position.set(x, y, z);
-            scene.add(cube);
-            return cube;
-        };
+            updateAnimalsDisplay();
+        }
 
-        // Появление куба
-        const spawnCube = () => {
-            const angle = Math.random() * Math.PI * 2;
-            const radius = 2 + Math.random() * 2;
-            const x = Math.cos(angle) * radius;
-            const z = Math.sin(angle) * radius;
-            
-            const cube = createCube(x, 0.5, z);
-            cubes.push(cube);
-        };
+        function updateAnimalsDisplay() {
+            const nearby = animals.filter(a => !a.caught).length;
+            document.getElementById('nearby').textContent = nearby;
+        }
 
-        // Анимация
-        const animate = () => {
+        function animate() {
             requestAnimationFrame(animate);
-            
-            cubes.forEach(cube => {
-                cube.rotation.x += 0.02;
-                cube.rotation.y += 0.02;
-                cube.position.y = 0.5 + Math.sin(Date.now() * 0.002) * 0.3;
-            });
-
             renderer.render(scene, camera);
-        };
+        }
 
-        // Обработка кнопки
-        document.getElementById('catchButton').addEventListener('click', () => {
-            if(cubes.length > 0) {
-                const cube = cubes.pop();
-                scene.remove(cube);
-                score++;
-                document.getElementById('score').textContent = score;
-                spawnCube();
-            }
-        });
+        function init() {
+            initScene();
+            checkOrientationSupport();
+            setupOrientation();
+            setupManualControls();
+            startGeoTracking();
+            animate();
 
-        // Запуск приложения
-        window.addEventListener('load', initCamera);
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
+            tg.onEvent('viewportChanged', () => {
+                camera.aspect = tg.viewportWidth / tg.viewportHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(tg.viewportWidth, tg.viewportHeight);
+            });
+        }
+
+        init();
     </script>
 </body>
 </html>
