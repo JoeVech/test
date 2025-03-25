@@ -1,62 +1,81 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
-    <title>AR Game with Visual Markers</title>
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AR Persistent Object Demo</title>
     <style>
+        /* Сброс стандартных отступов и скрытие скроллов */
         body {
             margin: 0;
+            padding: 0;
             overflow: hidden;
-            background: #000;
+            background-color: #000000;
         }
 
+        /* Контейнер для видео с камеры */
         #videoContainer {
             position: fixed;
             top: 0;
             left: 0;
-            width: 100%;
-            height: 100%;
+            width: 100vw;
+            height: 100vh;
             object-fit: cover;
             z-index: 1;
         }
 
+        /* Контейнер для 3D-рендеринга */
         #canvasContainer {
             position: fixed;
             top: 0;
             left: 0;
-            width: 100%;
-            height: 100%;
+            width: 100vw;
+            height: 100vh;
             z-index: 2;
             pointer-events: none;
         }
 
+        /* Стиль загрузчика */
         .loader {
             position: fixed;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            color: white;
-            font-family: Arial;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+            font-size: 1.2em;
             text-align: center;
             z-index: 1000;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
         }
 
+        /* Стиль кнопки запуска AR */
         #startButton {
             position: fixed;
-            bottom: 20px;
+            bottom: 30px;
             left: 50%;
             transform: translateX(-50%);
-            padding: 12px 24px;
-            background: #4CC3D9;
-            color: white;
+            padding: 15px 30px;
+            background-color: #4CC3D9;
+            color: #ffffff;
             border: none;
-            border-radius: 25px;
-            font-size: 16px;
+            border-radius: 30px;
+            font-size: 1.1em;
             cursor: pointer;
             z-index: 1001;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            transition: all 0.3s ease;
             display: none;
         }
 
+        #startButton:hover {
+            background-color: #3DA4B9;
+            transform: translateX(-50%) scale(1.05);
+        }
+
+        /* Стиль прицела */
         .reticle {
             position: fixed;
             top: 50%;
@@ -69,11 +88,12 @@
             z-index: 1002;
         }
 
-        .reticle::before, .reticle::after {
+        .reticle::before,
+        .reticle::after {
             content: '';
             position: absolute;
-            background: #4CC3D9;
-            transition: all 0.3s;
+            background-color: #4CC3D9;
+            transition: all 0.3s ease;
         }
 
         .reticle::before {
@@ -90,223 +110,236 @@
             top: 8px;
         }
 
+        /* Стиль радара */
         #radar {
             position: fixed;
-            bottom: 20px;
-            right: 20px;
+            bottom: 30px;
+            right: 30px;
             width: 120px;
             height: 120px;
             border-radius: 50%;
-            background: rgba(0,0,0,0.7);
+            background-color: rgba(0, 0, 0, 0.7);
             border: 2px solid #4CC3D9;
             z-index: 1003;
+            box-shadow: 0 0 15px rgba(76, 195, 217, 0.3);
         }
     </style>
 </head>
 <body>
+    <!-- Элементы интерфейса -->
     <div class="loader" id="loader">Инициализация камеры...</div>
-    <button id="startButton">Начать охоту</button>
-    <div class="reticle" id="reticle"></div>
+    <button id="startButton">Начать AR-поиск</button>
+    <div class="reticle"></div>
     <div id="radar"></div>
+
+    <!-- Видео поток с камеры -->
     <video id="videoContainer" autoplay playsinline muted></video>
+
+    <!-- Контейнер для Three.js -->
     <div id="canvasContainer"></div>
 
+    <!-- Подключение Three.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
     <script>
+        // Глобальные переменные
         let scene, renderer, camera, cube;
         let isTracking = false;
-        let alpha = 0, beta = 0, gamma = 0;
-        let creatures = [];
-        let footPrints = [];
+        let devicePosition = new THREE.Vector3(0, 0, 0);
+        let deviceRotation = new THREE.Euler();
+        const FIXED_CUBE_POSITION = new THREE.Vector3(5, 0.5, -8); // Фиксированная позиция куба
 
         // Инициализация камеры устройства
-        const initDeviceCamera = async () => {
+        const initializeDeviceCamera = async () => {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'environment' }
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
                 });
 
-                const video = document.getElementById('videoContainer');
-                video.srcObject = stream;
-                
-                video.onloadedmetadata = () => {
-                    initThreeScene();
+                const videoElement = document.getElementById('videoContainer');
+                videoElement.srcObject = stream;
+
+                videoElement.onloadedmetadata = () => {
+                    initialize3DScene();
                     document.getElementById('loader').style.display = 'none';
                     document.getElementById('startButton').style.display = 'block';
                 };
             } catch (error) {
                 document.getElementById('loader').innerHTML = `
-                    <div style="color: red">
+                    <div style="color: #ff4444">
                         Ошибка доступа к камере!<br>
-                        ${error.message || error.name}
+                        ${error.name}: ${error.message}<br>
+                        Пожалуйста проверьте:<br>
+                        1. Разрешения камеры<br>
+                        2. Поддержку AR в браузере<br>
+                        3. Стабильность интернет-соединения
                     </div>`;
             }
         };
 
-        // Инициализация Three.js сцены
-        const initThreeScene = () => {
+        // Инициализация 3D сцены
+        const initialize3DScene = () => {
+            // Создание сцены
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
-            renderer = new THREE.WebGLRenderer({ 
+
+            // Настройка камеры
+            camera = new THREE.PerspectiveCamera(
+                75,
+                window.innerWidth / window.innerHeight,
+                0.1,
+                1000
+            );
+
+            // Настройка рендерера
+            renderer = new THREE.WebGLRenderer({
                 alpha: true,
                 antialias: true
             });
-
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             document.getElementById('canvasContainer').appendChild(renderer.domElement);
 
-            // Освещение
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            // Создание фиксированного куба
+            const cubeGeometry = new THREE.BoxGeometry(1, 1, 1);
+            const cubeMaterial = new THREE.MeshPhongMaterial({
+                color: 0xFF6B6B,
+                shininess: 100
+            });
+            cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+            cube.position.copy(FIXED_CUBE_POSITION);
+            scene.add(cube);
+
+            // Настройка освещения
+            const ambientLight = new THREE.AmbientLight(0xFFFFFF, 0.8);
             scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xFFFFFF, 0.6);
+            directionalLight.position.set(0, 5, 5);
+            scene.add(directionalLight);
         };
 
-        // Создание интерактивной зоны
-        const createInteractionZone = () => {
-            const radius = 3;
-            const geometry = new THREE.RingGeometry(radius-0.1, radius, 32);
-            const material = new THREE.MeshBasicMaterial({
-                color: 0x4CC3D9,
-                side: THREE.DoubleSide,
-                transparent: true,
-                opacity: 0.3
-            });
-            
-            const zone = new THREE.Mesh(geometry, material);
-            zone.rotation.x = -Math.PI/2;
-            zone.position.y = -0.5;
-            scene.add(zone);
-
-            // Анимация пульсации
-            let scale = 1;
-            const animateZone = () => {
-                scale = 0.95 + Math.sin(Date.now()*0.005)*0.05;
-                zone.scale.set(scale, scale, scale);
-                requestAnimationFrame(animateZone);
-            };
-            animateZone();
-        };
-
-        // Создание следов
-        const leaveFootprint = () => {
-            const geometry = new THREE.CircleGeometry(0.1, 16);
-            const material = new THREE.MeshBasicMaterial({ 
-                color: 0x4CC3D9,
-                transparent: true,
-                opacity: 0.5
-            });
-            
-            const footprint = new THREE.Mesh(geometry, material);
-            footprint.rotation.x = -Math.PI/2;
-            footprint.position.copy(camera.position);
-            footprint.position.y = -0.5;
-            
-            scene.add(footprint);
-            footPrints.push(footprint);
-
-            if(footPrints.length > 15) {
-                scene.remove(footPrints.shift());
-            }
-        };
-
-        // Обновление радара
-        const updateRadar = () => {
-            const radar = document.getElementById('radar');
-            radar.innerHTML = '';
-            
-            creatures.forEach(creature => {
-                const marker = document.createElement('div');
-                const relativePos = creature.position.clone().sub(camera.position);
-                const radarX = (relativePos.x / 5) * 60;
-                const radarY = (relativePos.z / 5) * 60;
-
-                marker.style.cssText = `
-                    position: absolute;
-                    width: 8px;
-                    height: 8px;
-                    background: #FF6B6B;
-                    border-radius: 50%;
-                    left: ${60 + radarX}px;
-                    top: ${60 - radarY}px;
-                `;
-                radar.appendChild(marker);
-            });
-        };
-
-        // Обработчик ориентации устройства
+        // Обработчик данных с датчиков
         const handleDeviceOrientation = (event) => {
             if (!isTracking) return;
 
-            alpha = THREE.MathUtils.degToRad(event.alpha);
-            beta = THREE.MathUtils.degToRad(event.beta);
-            gamma = THREE.MathUtils.degToRad(event.gamma);
+            // Обновление вращения устройства
+            deviceRotation.set(
+                THREE.MathUtils.degToRad(event.beta),
+                THREE.MathUtils.degToRad(event.gamma),
+                THREE.MathUtils.degToRad(event.alpha),
+                'YXZ'
+            );
 
-            if (cube) {
-                camera.position.x = Math.sin(alpha) * 2;
-                camera.position.y = -beta * 2;
-                camera.position.z = Math.cos(alpha) * 2;
-                camera.lookAt(cube.position);
-            }
+            // Рассчет смещения позиции
+            const movementSpeed = 0.05;
+            const deltaPosition = new THREE.Vector3(
+                Math.sin(deviceRotation.z) * movementSpeed,
+                -deviceRotation.x * movementSpeed,
+                Math.cos(deviceRotation.z) * movementSpeed
+            );
+
+            devicePosition.add(deltaPosition);
         };
 
-        // Старт AR-сессии
+        // Обновление радара
+        const updateRadarDisplay = () => {
+            const radarElement = document.getElementById('radar');
+            radarElement.innerHTML = '';
+
+            // Рассчет относительной позиции
+            const relativePosition = FIXED_CUBE_POSITION.clone().sub(devicePosition);
+            const distance = relativePosition.length();
+            const direction = new THREE.Vector2(
+                relativePosition.x,
+                relativePosition.z
+            ).normalize();
+
+            // Параметры радара
+            const maxDetectionRadius = 20;
+            const radarScale = 60 / maxDetectionRadius;
+            const clampedDistance = Math.min(distance, maxDetectionRadius);
+
+            // Создание маркера
+            const marker = document.createElement('div');
+            marker.style.cssText = `
+                position: absolute;
+                width: ${distance <= 3 ? '14px' : '10px'};
+                height: ${distance <= 3 ? '14px' : '10px'};
+                background: ${distance <= 3 ? '#4CC3D9' : '#FF6B6B'};
+                border-radius: 50%;
+                left: ${60 + direction.x * clampedDistance * radarScale}px;
+                top: ${60 - direction.y * clampedDistance * radarScale}px;
+                box-shadow: 0 0 8px ${distance <= 3 ? '#4CC3D9' : '#FF6B6B'};
+                transition: all 0.3s ease;
+            `;
+
+            radarElement.appendChild(marker);
+        };
+
+        // Запуск AR сессии
         const startARSession = async () => {
             try {
+                // Запрос разрешений для iOS
                 if (typeof DeviceOrientationEvent !== 'undefined' && 
                     typeof DeviceOrientationEvent.requestPermission === 'function') {
                     const permission = await DeviceOrientationEvent.requestPermission();
-                    if (permission !== 'granted') throw new Error('Permission denied');
+                    if (permission !== 'granted') {
+                        throw new Error('Необходимо разрешение на использование датчиков');
+                    }
                 }
 
                 isTracking = true;
                 document.getElementById('startButton').style.display = 'none';
 
-                // Создание тестового существа
-                const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-                const material = new THREE.MeshPhongMaterial({ color: 0xFF6B6B });
-                cube = new THREE.Mesh(geometry, material);
-                cube.position.set(0, 0, -3);
-                cube.isCreature = true;
-                scene.add(cube);
-                creatures.push(cube);
+                // Начальная настройка камеры
+                camera.position.copy(devicePosition);
+                camera.rotation.copy(deviceRotation);
 
-                // Инициализация маркеров
-                createInteractionZone();
-                setInterval(leaveFootprint, 3000);
-                setInterval(updateRadar, 100);
+                // Запуск циклов обновления
+                setInterval(() => {
+                    camera.position.copy(devicePosition);
+                    camera.rotation.copy(deviceRotation);
+                    updateRadarDisplay();
+                }, 100);
 
-                camera.position.set(0, 0, 0);
-                camera.lookAt(cube.position);
                 window.addEventListener('deviceorientation', handleDeviceOrientation);
-                animate();
+                startAnimationLoop();
 
             } catch (error) {
                 alert(`Ошибка: ${error.message}`);
             }
         };
 
-        // Анимационный цикл
-        const animate = () => {
-            requestAnimationFrame(animate);
-            
-            creatures.forEach(creature => {
-                creature.rotation.y += 0.01;
-            });
-            
-            renderer.render(scene, camera);
+        // Цикл анимации
+        const startAnimationLoop = () => {
+            const animate = () => {
+                requestAnimationFrame(animate);
+
+                // Вращение куба
+                cube.rotation.x += 0.005;
+                cube.rotation.y += 0.01;
+
+                // Рендер сцены
+                renderer.render(scene, camera);
+            };
+            animate();
         };
 
-        // Инициализация
-        window.addEventListener('load', initDeviceCamera);
-        document.getElementById('startButton').addEventListener('click', startARSession);
-
-        // Обработчик ресайза
-        window.addEventListener('resize', () => {
+        // Обработчик изменения размера окна
+        const handleWindowResize = () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
-        });
+        };
+
+        // Инициализация приложения
+        window.addEventListener('load', initializeDeviceCamera);
+        document.getElementById('startButton').addEventListener('click', startARSession);
+        window.addEventListener('resize', handleWindowResize);
     </script>
 </body>
 </html>
