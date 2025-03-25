@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AR Camera with Plane Detection</title>
+    <title>AR Camera Tracking</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
         body {
@@ -40,28 +40,40 @@
             text-align: center;
             z-index: 1000;
         }
+
+        #startButton {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 24px;
+            background: #4CC3D9;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            z-index: 1001;
+            display: none;
+        }
     </style>
 </head>
 <body>
     <div class="loader" id="loader">Инициализация камеры...</div>
+    <button id="startButton">Начать AR-сессию</button>
     <video id="videoContainer" autoplay playsinline muted></video>
     <div id="canvasContainer"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
     <script>
-        // Инициализация Telegram Web App
-        if (typeof Telegram !== 'undefined') {
-            Telegram.WebApp.ready();
-            Telegram.WebApp.expand();
-        }
+        let scene, renderer, camera, cube;
+        let isTracking = false;
+        let initialAlpha = null;
+        let alpha = 0, beta = 0, gamma = 0;
 
-        let scene, camera, renderer, cube;
-        let raycaster = new THREE.Raycaster();
-        let mouse = new THREE.Vector2();
-
-        // Настройка камеры
-        const initCamera = async () => {
+        // Инициализация камеры устройства
+        const initDeviceCamera = async () => {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: {
@@ -73,86 +85,121 @@
 
                 const video = document.getElementById('videoContainer');
                 video.srcObject = stream;
-
+                
                 video.onloadedmetadata = () => {
-                    initThreeJS();
+                    initThreeScene();
                     document.getElementById('loader').style.display = 'none';
+                    document.getElementById('startButton').style.display = 'block';
                 };
             } catch (error) {
                 document.getElementById('loader').innerHTML = `
                     <div style="color: red">
                         Ошибка доступа к камере!<br>
-                        ${error.name}: ${error.message}<br>
-                        Пожалуйста:<br>
-                        1. Проверьте разрешения<br>
-                        2. Перезагрузите страницу
+                        ${error.message || error.name}
                     </div>`;
             }
         };
 
-        // Инициализация Three.js
-        const initThreeJS = () => {
-            const container = document.getElementById('canvasContainer');
-
-            // Создание сцены
+        // Инициализация Three.js сцены
+        const initThreeScene = () => {
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-            renderer = new THREE.WebGLRenderer({ alpha: true });
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ 
+                alpha: true,
+                antialias: true
+            });
 
             renderer.setSize(window.innerWidth, window.innerHeight);
-            container.appendChild(renderer.domElement);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('canvasContainer').appendChild(renderer.domElement);
 
-            // Настройка камеры
-            camera.position.set(0, 0, 2);
-            camera.lookAt(0, 0, 0);
+            // Настройка освещения
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
 
-            // Обработчик кликов
-            window.addEventListener('click', onDocumentClick, false);
-
-            // Запуск анимации
-            animate();
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            directionalLight.position.set(0, 1, 0);
+            scene.add(directionalLight);
         };
 
-        // Обработка кликов
-        function onDocumentClick(event) {
-            // Удаляем предыдущий куб
-            if (cube) {
-                scene.remove(cube);
+        // Обработчик данных с датчиков
+        const handleDeviceOrientation = (event) => {
+            if (!isTracking) return;
+
+            // Корректировка значений для ландшафтной ориентации
+            alpha = THREE.MathUtils.degToRad(event.alpha);
+            beta = THREE.MathUtils.degToRad(event.beta);
+            gamma = THREE.MathUtils.degToRad(event.gamma);
+
+            // Рассчет относительного смещения
+            const deltaAlpha = initialAlpha !== null ? alpha - initialAlpha : 0;
+            initialAlpha = initialAlpha ?? alpha;
+
+            // Обновление позиции камеры
+            camera.position.x = Math.sin(deltaAlpha) * 2;
+            camera.position.y = -beta * 2;
+            camera.position.z = Math.cos(deltaAlpha) * 2;
+
+            camera.lookAt(cube.position);
+        };
+
+        // Инициализация AR-сессии
+        const startARSession = async () => {
+            try {
+                // Запрос разрешения для iOS
+                if (typeof DeviceOrientationEvent !== 'undefined' && 
+                    typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    const permission = await DeviceOrientationEvent.requestPermission();
+                    if (permission !== 'granted') throw new Error('Permission denied');
+                }
+
+                isTracking = true;
+                document.getElementById('startButton').style.display = 'none';
+
+                // Создание куба
+                const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: 0x4CC3D9,
+                    shininess: 100 
+                });
+                cube = new THREE.Mesh(geometry, material);
+                cube.position.set(0, 0, -3);
+                scene.add(cube);
+
+                // Начальные параметры камеры
+                camera.position.set(0, 0, 0);
+                camera.lookAt(cube.position);
+
+                // Подключение обработчика датчиков
+                window.addEventListener('deviceorientation', handleDeviceOrientation);
+                animate();
+
+            } catch (error) {
+                alert(`Ошибка: ${error.message}`);
             }
+        };
 
-            // Получаем позицию клика
-            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-            // Создаем луч
-            raycaster.setFromCamera(mouse, camera);
-
-            // Рассчитываем позицию на виртуальной плоскости (2 метра от камеры)
-            const distance = 2;
-            const position = new THREE.Vector3();
-            raycaster.ray.at(distance, position);
-
-            // Создаем новый куб
-            const geometry = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-            const material = new THREE.MeshBasicMaterial({ color: 0x4CC3D9 });
-            cube = new THREE.Mesh(geometry, material);
-            
-            cube.position.copy(position);
-            scene.add(cube);
-        }
-
-        // Анимация
+        // Цикл анимации
         const animate = () => {
             requestAnimationFrame(animate);
+            
             if (cube) {
-                cube.rotation.x += 0.01;
                 cube.rotation.y += 0.01;
             }
+            
             renderer.render(scene, camera);
         };
 
-        // Запуск при загрузке
-        window.addEventListener('load', initCamera);
+        // Инициализация при загрузке
+        window.addEventListener('load', initDeviceCamera);
+        document.getElementById('startButton').addEventListener('click', startARSession);
+
+        // Обработчик изменения размера
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
     </script>
 </body>
 </html>
