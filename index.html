@@ -2,8 +2,8 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Стабильный AR с кубом</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Стабильный AR с фиксированным кубом</title>
     <style>
         body {
             margin: 0;
@@ -72,11 +72,26 @@
             z-index: 1002;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
+
+        #calibrateBtn {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 10px 20px;
+            background: #FF6B6B;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            z-index: 1003;
+            display: none;
+        }
     </style>
 </head>
 <body>
-    <div class="loader" id="loader">Инициализация AR...</div>
-    <button id="startButton">Начать</button>
+    <div class="loader" id="loader">Инициализация AR системы...</div>
+    <button id="startButton">Начать охоту</button>
+    <button id="calibrateBtn">Калибровать позицию</button>
     <div id="statusPanel">Дистанция: -</div>
     <video id="videoContainer" autoplay playsinline muted></video>
     <div id="canvasContainer"></div>
@@ -84,14 +99,24 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
     <script>
-        let scene, renderer, camera, cube;
+        let scene, renderer, camera, cube, grid;
         let isTracking = false;
-        const FIXED_CUBE_POSITION = new THREE.Vector3(0, 1.5, -5);
-        let initialAlpha = null;
-        let initialBeta = null;
-        let initialGamma = null;
-        let devicePosition = new THREE.Vector3(0, 0, 0);
+        const FIXED_CUBE_POSITION = new THREE.Vector3(0, 1.5, -3);
+        
+        // Система трекинга
+        let acceleration = new THREE.Vector3();
+        let velocity = new THREE.Vector3();
+        let position = new THREE.Vector3();
+        let lastTimestamp = null;
+        let idleTimer = null;
+        let isCalibrating = false;
 
+        // Фильтры
+        const FILTER_FACTOR = 0.15;
+        let filteredAcceleration = new THREE.Vector3();
+        let filteredRotation = new THREE.Vector3();
+
+        // Инициализация камеры устройства
         async function initCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
@@ -109,28 +134,51 @@
             } catch (error) {
                 document.getElementById('loader').innerHTML = `
                     <div style="color: #ff4444">
-                        Ошибка: ${error.message}
+                        Ошибка инициализации!<br>
+                        ${error.message}<br>
+                        Проверьте разрешения камеры
                     </div>`;
             }
         }
 
+        // Инициализация 3D сцены
         function initThreeScene() {
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
-            renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
             
+            // Настройка камеры
+            camera = new THREE.PerspectiveCamera(
+                60,
+                window.innerWidth / window.innerHeight,
+                0.1,
+                1000
+            );
+            
+            // Настройка рендерера
+            renderer = new THREE.WebGLRenderer({
+                alpha: true,
+                antialias: true
+            });
             renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
             document.getElementById('canvasContainer').appendChild(renderer.domElement);
 
             // Создание куба
             const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
             const material = new THREE.MeshPhongMaterial({
                 color: 0x4CC3D9,
-                emissive: 0x003333
+                emissive: 0x003333,
+                specular: 0x555555,
+                shininess: 100
             });
             cube = new THREE.Mesh(geometry, material);
             cube.position.copy(FIXED_CUBE_POSITION);
             scene.add(cube);
+
+            // Создание сетки
+            grid = new THREE.GridHelper(10, 20, 0x4CC3D9, 0x444444);
+            grid.rotation.x = Math.PI/2;
+            grid.position.y = -0.5;
+            scene.add(grid);
 
             // Освещение
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -141,78 +189,164 @@
             scene.add(directionalLight);
         }
 
+        // Запуск трекинга
         async function startTracking() {
             try {
-                if (typeof DeviceOrientationEvent !== 'undefined' && 
-                    typeof DeviceOrientationEvent.requestPermission === 'function') {
-                    const permission = await DeviceOrientationEvent.requestPermission();
-                    if (permission !== 'granted') throw new Error('Разрешение отклонено');
+                const [motionPermission, orientationPermission] = await Promise.all([
+                    DeviceMotionEvent.requestPermission(),
+                    DeviceOrientationEvent.requestPermission()
+                ]);
+                
+                if (motionPermission !== 'granted' || orientationPermission !== 'granted') {
+                    throw new Error('Необходимы все разрешения');
                 }
 
                 isTracking = true;
                 document.getElementById('startButton').style.display = 'none';
+                document.getElementById('calibrateBtn').style.display = 'block';
                 
-                let firstUpdate = true;
-                let lastPosition = new THREE.Vector3();
+                initTrackingSystem();
+                startIdleMonitoring();
                 
-                const handleOrientation = (event) => {
-                    if (!isTracking || !event.alpha) return;
-
-                    if (firstUpdate) {
-                        initialAlpha = event.alpha;
-                        initialBeta = event.beta;
-                        initialGamma = event.gamma;
-                        firstUpdate = false;
-                        return;
-                    }
-
-                    // Расчет относительных изменений
-                    const deltaAlpha = THREE.MathUtils.degToRad(event.alpha - initialAlpha);
-                    const deltaBeta = THREE.MathUtils.degToRad(event.beta - initialBeta) * 0.5;
-                    const deltaGamma = THREE.MathUtils.degToRad(event.gamma - initialGamma) * 0.5;
-
-                    // Обновление позиции камеры
-                    camera.position.x += Math.sin(deltaAlpha) * 0.02;
-                    camera.position.z += Math.cos(deltaAlpha) * 0.02;
-                    camera.position.y += deltaBeta * 0.02;
-
-                    // Ограничение дрейфа
-                    if (camera.position.distanceTo(lastPosition) > 10) {
-                        camera.position.copy(lastPosition);
-                    }
-                    lastPosition.copy(camera.position);
-
-                    // Обновление вращения камеры
-                    camera.rotation.set(
-                        THREE.MathUtils.degToRad(event.beta - 90),
-                        THREE.MathUtils.degToRad(-event.gamma),
-                        THREE.MathUtils.degToRad(-event.alpha),
-                        'YXZ'
-                    );
-
-                    // Обновление дистанции
-                    const distance = camera.position.distanceTo(FIXED_CUBE_POSITION);
-                    document.getElementById('statusPanel').textContent = 
-                        `Дистанция: ${distance.toFixed(1)}m`;
-
-                    renderer.render(scene, camera);
-                };
-
-                window.addEventListener('deviceorientation', handleOrientation);
             } catch (error) {
                 alert(`Ошибка: ${error.message}`);
                 isTracking = false;
             }
         }
 
-        window.addEventListener('load', initCamera);
-        document.getElementById('startButton').addEventListener('click', startTracking);
+        // Инициализация системы трекинга
+        function initTrackingSystem() {
+            let lastUpdate = 0;
+            
+            window.addEventListener('devicemotion', event => {
+                if (!isTracking || isCalibrating) return;
 
+                const now = performance.now();
+                const dt = (now - lastUpdate) / 1000;
+                lastUpdate = now;
+
+                // Фильтрация данных
+                filterSensorData(event.acceleration, event.rotationRate, dt);
+
+                // Интегрирование движения
+                integrateMovement(dt);
+
+                // Коррекция дрейфа
+                applyDriftCompensation(dt);
+
+                // Обновление позиции
+                updateCameraPosition();
+
+                // Проверка захвата
+                checkCapture();
+            });
+
+            // Калибровка по кнопке
+            document.getElementById('calibrateBtn').addEventListener('click', () => {
+                resetTrackingSystem();
+                showCalibrationEffect();
+            });
+        }
+
+        // Фильтрация данных сенсоров
+        function filterSensorData(accel, rotation, dt) {
+            // Фильтр акселерометра
+            const newAccel = new THREE.Vector3(
+                accel.x * 0.1,
+                accel.y * 0.1 - 9.81, // Компенсация гравитации
+                accel.z * 0.1
+            );
+            filteredAcceleration.lerp(newAccel, FILTER_FACTOR);
+
+            // Фильтр гироскопа
+            const newRotation = new THREE.Vector3(
+                THREE.MathUtils.degToRad(rotation.alpha),
+                THREE.MathUtils.degToRad(rotation.beta),
+                THREE.MathUtils.degToRad(rotation.gamma)
+            );
+            filteredRotation.lerp(newRotation, FILTER_FACTOR);
+        }
+
+        // Интегрирование движения
+        function integrateMovement(dt) {
+            if (dt > 0 && dt < 0.1) {
+                velocity.add(filteredAcceleration.clone().multiplyScalar(dt));
+                velocity.multiplyScalar(0.99); // Воздушное сопротивление
+                position.add(velocity.clone().multiplyScalar(dt));
+            }
+        }
+
+        // Компенсация дрейфа
+        function applyDriftCompensation(dt) {
+            if (velocity.length() < 0.05) {
+                velocity.set(0, 0, 0);
+            }
+        }
+
+        // Обновление позиции камеры
+        function updateCameraPosition() {
+            camera.position.copy(position);
+            camera.rotation.set(
+                filteredRotation.y,
+                filteredRotation.x,
+                filteredRotation.z,
+                'YXZ'
+            );
+
+            // Обновление дистанции
+            const distance = position.distanceTo(FIXED_CUBE_POSITION);
+            document.getElementById('statusPanel').textContent = 
+                `Дистанция: ${distance.toFixed(1)}m`;
+
+            renderer.render(scene, camera);
+        }
+
+        // Проверка захвата куба
+        function checkCapture() {
+            const distance = position.distanceTo(FIXED_CUBE_POSITION);
+            if (distance < 0.5) {
+                cube.material.emissive.setHex(0x00FF00);
+                setTimeout(() => cube.material.emissive.setHex(0x003333), 500);
+            }
+        }
+
+        // Мониторинг бездействия
+        function startIdleMonitoring() {
+            idleTimer = setInterval(() => {
+                if (velocity.length() < 0.01 && acceleration.length() < 0.1) {
+                    resetTrackingSystem();
+                }
+            }, 5000);
+        }
+
+        // Сброс системы трекинга
+        function resetTrackingSystem() {
+            position.set(0, 0, 0);
+            velocity.set(0, 0, 0);
+            filteredAcceleration.set(0, 0, 0);
+            filteredRotation.set(0, 0, 0);
+        }
+
+        // Эффект калибровки
+        function showCalibrationEffect() {
+            isCalibrating = true;
+            grid.material.opacity = 0.8;
+            setTimeout(() => {
+                grid.material.opacity = 0.3;
+                isCalibrating = false;
+            }, 1000);
+        }
+
+        // Обработка изменения размера
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
+
+        // Инициализация при загрузке
+        window.addEventListener('load', initCamera);
+        document.getElementById('startButton').addEventListener('click', startTracking);
     </script>
 </body>
 </html>
