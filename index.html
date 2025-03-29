@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Стабильный AR с фиксированным кубом</title>
+    <title>AR с фиксированным кубом</title>
     <style>
         body {
             margin: 0;
@@ -73,15 +73,11 @@
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
             transition: transform 0.2s;
         }
-
-        #startButton:active {
-            transform: translateX(-50%) scale(0.95);
-        }
     </style>
 </head>
 <body>
-    <div class="loader" id="loader">Инициализация AR системы...</div>
-    <button id="startButton">Начать охоту</button>
+    <div class="loader" id="loader">Инициализация AR...</div>
+    <button id="startButton">Начать</button>
     <div id="statusPanel">Дистанция: -</div>
     <video id="videoContainer" autoplay playsinline muted></video>
     <div id="canvasContainer"></div>
@@ -91,34 +87,11 @@
     <script>
         let scene, renderer, camera, cube;
         let isTracking = false;
-        const FIXED_CUBE_POSITION = new THREE.Vector3(0, 0, -5);
-        const SMOOTHING_FACTOR = 0.15;
-        const CAPTURE_DISTANCE = 0.8;
-        const MOVEMENT_FACTOR = 0.02;
-
-        class SensorFilter {
-            constructor() {
-                this.position = new THREE.Vector3();
-                this.velocity = new THREE.Vector3();
-                this.acceleration = new THREE.Vector3();
-                this.filterFactor = 0.1;
-            }
-
-            update(acceleration, deltaTime) {
-                // Фильтрация ускорения
-                this.acceleration.lerp(acceleration, this.filterFactor);
-                
-                // Интегрирование скорости
-                this.velocity.add(this.acceleration.clone().multiplyScalar(deltaTime));
-                
-                // Интегрирование позиции
-                this.position.add(this.velocity.clone().multiplyScalar(deltaTime));
-                
-                return this.position.clone();
-            }
-        }
-
-        const sensorFilter = new SensorFilter();
+        const FIXED_CUBE_POSITION = new THREE.Vector3(0, 1.5, -3);
+        const MOVEMENT_FACTOR = 0.05;
+        let previousAlpha = null;
+        let previousBeta = null;
+        let previousGamma = null;
 
         async function initCamera() {
             try {
@@ -140,9 +113,7 @@
                 document.getElementById('loader').innerHTML = `
                     <div style="color: #ff4444">
                         Ошибка инициализации!<br>
-                        ${error.message}<br>
-                        Проверьте разрешения камеры<br>
-                        и перезагрузите страницу
+                        ${error.message}
                     </div>`;
             }
         }
@@ -150,7 +121,7 @@
         function initThreeScene() {
             scene = new THREE.Scene();
             camera = new THREE.PerspectiveCamera(
-                75,
+                60,
                 window.innerWidth / window.innerHeight,
                 0.1,
                 1000
@@ -166,12 +137,10 @@
             document.getElementById('canvasContainer').appendChild(renderer.domElement);
 
             // Создание куба
-            const geometry = new THREE.BoxGeometry(1, 1, 1);
+            const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
             const material = new THREE.MeshPhongMaterial({
                 color: 0x4CC3D9,
-                emissive: 0x003333,
-                specular: 0x555555,
-                shininess: 100
+                emissive: 0x003333
             });
             
             cube = new THREE.Mesh(geometry, material);
@@ -200,79 +169,68 @@
                 isTracking = true;
                 document.getElementById('startButton').style.display = 'none';
                 
-                let lastTime = performance.now();
-                let animationFrameId;
-
-                const update = () => {
+                let lastUpdate = performance.now();
+                
+                const handleOrientation = (event) => {
                     if (!isTracking) return;
                     
-                    const currentTime = performance.now();
-                    const deltaTime = (currentTime - lastTime) / 1000;
-                    lastTime = currentTime;
+                    const now = performance.now();
+                    const deltaTime = (now - lastUpdate) / 1000;
+                    lastUpdate = now;
 
-                    // Расчет ускорения
-                    const acceleration = new THREE.Vector3(
-                        Math.sin(camera.rotation.y) * MOVEMENT_FACTOR,
-                        0,
-                        Math.cos(camera.rotation.y) * MOVEMENT_FACTOR
+                    // Инициализация предыдущих значений
+                    if (previousAlpha === null) {
+                        previousAlpha = event.alpha;
+                        previousBeta = event.beta;
+                        previousGamma = event.gamma;
+                        return;
+                    }
+
+                    // Расчет изменения углов
+                    const deltaAlpha = THREE.MathUtils.degToRad(event.alpha - previousAlpha);
+                    const deltaBeta = THREE.MathUtils.degToRad(event.beta - previousBeta);
+                    const deltaGamma = THREE.MathUtils.degToRad(event.gamma - previousGamma);
+
+                    // Обновление позиции камеры
+                    camera.position.x += Math.sin(deltaAlpha) * MOVEMENT_FACTOR;
+                    camera.position.z += Math.cos(deltaAlpha) * MOVEMENT_FACTOR;
+                    camera.position.y += deltaBeta * MOVEMENT_FACTOR;
+
+                    // Обновление вращения камеры
+                    camera.rotation.set(
+                        THREE.MathUtils.degToRad(event.beta - 90),
+                        THREE.MathUtils.degToRad(-event.gamma),
+                        THREE.MathUtils.degToRad(-event.alpha),
+                        'YXZ'
                     );
 
-                    // Обновление позиции
-                    const targetPosition = sensorFilter.update(acceleration, deltaTime);
-                    camera.position.lerp(targetPosition, SMOOTHING_FACTOR);
+                    // Сохранение текущих значений
+                    previousAlpha = event.alpha;
+                    previousBeta = event.beta;
+                    previousGamma = event.gamma;
 
-                    // Ориентация камеры
-                    camera.lookAt(FIXED_CUBE_POSITION);
-
-                    // Обновление интерфейса
+                    // Обновление дистанции
                     const distance = camera.position.distanceTo(FIXED_CUBE_POSITION);
                     document.getElementById('statusPanel').textContent = 
                         `Дистанция: ${distance.toFixed(1)}m`;
 
-                    // Проверка захвата
-                    if (distance < CAPTURE_DISTANCE) {
-                        handleCapture();
-                    }
-
                     renderer.render(scene, camera);
-                    animationFrameId = requestAnimationFrame(update);
                 };
 
-                update();
+                window.addEventListener('deviceorientation', handleOrientation);
             } catch (error) {
                 alert(`Ошибка: ${error.message}`);
                 isTracking = false;
             }
         }
 
-        function handleCapture() {
-            cube.material.emissive.setHex(0x00ff00);
-            cube.material.needsUpdate = true;
-            document.getElementById('statusPanel').style.color = '#4CC3D9';
-            
-            setTimeout(() => {
-                cube.material.emissive.setHex(0x003333);
-                document.getElementById('statusPanel').style.color = '#fff';
-            }, 500);
-        }
-
-        // Инициализация при загрузке
         window.addEventListener('load', initCamera);
         document.getElementById('startButton').addEventListener('click', startTracking);
 
-        // Обработчик изменения размера
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        // Остановка при закрытии
-        window.addEventListener('beforeunload', () => {
-            isTracking = false;
-            if (renderer) {
-                renderer.dispose();
-            }
         });
     </script>
 </body>
