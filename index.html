@@ -3,17 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AR Persistent Object Demo</title>
+    <title>Стабильный AR с фиксированным кубом</title>
     <style>
-        /* Сброс стандартных отступов и скрытие скроллов */
         body {
             margin: 0;
             padding: 0;
             overflow: hidden;
-            background-color: #000000;
+            background: #000;
+            font-family: Arial, sans-serif;
         }
 
-        /* Контейнер для видео с камеры */
         #videoContainer {
             position: fixed;
             top: 0;
@@ -24,7 +23,6 @@
             z-index: 1;
         }
 
-        /* Контейнер для 3D-рендеринга */
         #canvasContainer {
             position: fixed;
             top: 0;
@@ -35,311 +33,247 @@
             pointer-events: none;
         }
 
-        /* Стиль загрузчика */
         .loader {
             position: fixed;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            color: #ffffff;
-            font-family: Arial, sans-serif;
-            font-size: 1.2em;
+            color: #fff;
             text-align: center;
             z-index: 1000;
-            background: rgba(0, 0, 0, 0.7);
+            background: rgba(0,0,0,0.8);
             padding: 20px;
             border-radius: 10px;
         }
 
-        /* Стиль кнопки запуска AR */
+        #statusPanel {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            color: #fff;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 1001;
+        }
+
         #startButton {
             position: fixed;
             bottom: 30px;
             left: 50%;
             transform: translateX(-50%);
             padding: 15px 30px;
-            background-color: #4CC3D9;
-            color: #ffffff;
+            background: #4CC3D9;
+            color: #fff;
             border: none;
             border-radius: 30px;
             font-size: 1.1em;
             cursor: pointer;
-            z-index: 1001;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            transition: all 0.3s ease;
-            display: none;
-        }
-
-        #startButton:hover {
-            background-color: #3DA4B9;
-            transform: translateX(-50%) scale(1.05);
-        }
-
-        /* Стиль прицела */
-        .reticle {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 40px;
-            height: 40px;
-            mix-blend-mode: difference;
-            pointer-events: none;
             z-index: 1002;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            transition: transform 0.2s;
         }
 
-        .reticle::before,
-        .reticle::after {
-            content: '';
-            position: absolute;
-            background-color: #4CC3D9;
-            transition: all 0.3s ease;
-        }
-
-        .reticle::before {
-            width: 24px;
-            height: 2px;
-            top: 19px;
-            left: 8px;
-        }
-
-        .reticle::after {
-            width: 2px;
-            height: 24px;
-            left: 19px;
-            top: 8px;
-        }
-
-        /* Стиль радара */
-        #radar {
-            position: fixed;
-            bottom: 30px;
-            right: 30px;
-            width: 120px;
-            height: 120px;
-            border-radius: 50%;
-            background-color: rgba(0, 0, 0, 0.7);
-            border: 2px solid #4CC3D9;
-            z-index: 1003;
-            box-shadow: 0 0 15px rgba(76, 195, 217, 0.3);
+        #startButton:active {
+            transform: translateX(-50%) scale(0.95);
         }
     </style>
 </head>
 <body>
-    <!-- Элементы интерфейса -->
-    <div class="loader" id="loader">Инициализация камеры...</div>
-    <button id="startButton">Начать AR-поиск</button>
-    <div class="reticle"></div>
-    <div id="radar"></div>
-
-    <!-- Видео поток с камеры -->
+    <div class="loader" id="loader">Инициализация AR системы...</div>
+    <button id="startButton">Начать охоту</button>
+    <div id="statusPanel">Дистанция: -</div>
     <video id="videoContainer" autoplay playsinline muted></video>
-
-    <!-- Контейнер для Three.js -->
     <div id="canvasContainer"></div>
 
-    <!-- Подключение Three.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
     <script>
-        // Глобальные переменные
         let scene, renderer, camera, cube;
         let isTracking = false;
-        let devicePosition = new THREE.Vector3(0, 0, 0);
-        let deviceRotation = new THREE.Euler();
-        const FIXED_CUBE_POSITION = new THREE.Vector3(5, 0.5, -8); // Фиксированная позиция куба
+        const FIXED_CUBE_POSITION = new THREE.Vector3(0, 0, -5);
+        const SMOOTHING_FACTOR = 0.15;
+        const CAPTURE_DISTANCE = 0.8;
+        const MOVEMENT_FACTOR = 0.02;
 
-        // Инициализация камеры устройства
-        const initializeDeviceCamera = async () => {
+        class SensorFilter {
+            constructor() {
+                this.position = new THREE.Vector3();
+                this.velocity = new THREE.Vector3();
+                this.acceleration = new THREE.Vector3();
+                this.filterFactor = 0.1;
+            }
+
+            update(acceleration, deltaTime) {
+                // Фильтрация ускорения
+                this.acceleration.lerp(acceleration, this.filterFactor);
+                
+                // Интегрирование скорости
+                this.velocity.add(this.acceleration.clone().multiplyScalar(deltaTime));
+                
+                // Интегрирование позиции
+                this.position.add(this.velocity.clone().multiplyScalar(deltaTime));
+                
+                return this.position.clone();
+            }
+        }
+
+        const sensorFilter = new SensorFilter();
+
+        async function initCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: 'environment',
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    }
+                    video: { facingMode: 'environment' }
+                });
+                
+                const video = document.getElementById('videoContainer');
+                video.srcObject = stream;
+                
+                await new Promise((resolve) => {
+                    video.onloadedmetadata = resolve;
                 });
 
-                const videoElement = document.getElementById('videoContainer');
-                videoElement.srcObject = stream;
-
-                videoElement.onloadedmetadata = () => {
-                    initialize3DScene();
-                    document.getElementById('loader').style.display = 'none';
-                    document.getElementById('startButton').style.display = 'block';
-                };
+                initThreeScene();
+                document.getElementById('loader').style.display = 'none';
+                document.getElementById('startButton').style.display = 'block';
             } catch (error) {
                 document.getElementById('loader').innerHTML = `
                     <div style="color: #ff4444">
-                        Ошибка доступа к камере!<br>
-                        ${error.name}: ${error.message}<br>
-                        Пожалуйста проверьте:<br>
-                        1. Разрешения камеры<br>
-                        2. Поддержку AR в браузере<br>
-                        3. Стабильность интернет-соединения
+                        Ошибка инициализации!<br>
+                        ${error.message}<br>
+                        Проверьте разрешения камеры<br>
+                        и перезагрузите страницу
                     </div>`;
             }
-        };
+        }
 
-        // Инициализация 3D сцены
-        const initialize3DScene = () => {
-            // Создание сцены
+        function initThreeScene() {
             scene = new THREE.Scene();
-
-            // Настройка камеры
             camera = new THREE.PerspectiveCamera(
                 75,
                 window.innerWidth / window.innerHeight,
                 0.1,
                 1000
             );
-
-            // Настройка рендерера
+            
             renderer = new THREE.WebGLRenderer({
                 alpha: true,
                 antialias: true
             });
+            
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             document.getElementById('canvasContainer').appendChild(renderer.domElement);
 
-            // Создание фиксированного куба
-            const cubeGeometry = new THREE.BoxGeometry(1, 1, 1);
-            const cubeMaterial = new THREE.MeshPhongMaterial({
-                color: 0xFF6B6B,
+            // Создание куба
+            const geometry = new THREE.BoxGeometry(1, 1, 1);
+            const material = new THREE.MeshPhongMaterial({
+                color: 0x4CC3D9,
+                emissive: 0x003333,
+                specular: 0x555555,
                 shininess: 100
             });
-            cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+            
+            cube = new THREE.Mesh(geometry, material);
             cube.position.copy(FIXED_CUBE_POSITION);
             scene.add(cube);
 
-            // Настройка освещения
-            const ambientLight = new THREE.AmbientLight(0xFFFFFF, 0.8);
+            // Освещение
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
             scene.add(ambientLight);
 
-            const directionalLight = new THREE.DirectionalLight(0xFFFFFF, 0.6);
-            directionalLight.position.set(0, 5, 5);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 5, 5);
             scene.add(directionalLight);
-        };
+        }
 
-        // Обработчик данных с датчиков
-        const handleDeviceOrientation = (event) => {
-            if (!isTracking) return;
-
-            // Обновление вращения устройства
-            deviceRotation.set(
-                THREE.MathUtils.degToRad(event.beta),
-                THREE.MathUtils.degToRad(event.gamma),
-                THREE.MathUtils.degToRad(event.alpha),
-                'YXZ'
-            );
-
-            // Рассчет смещения позиции
-            const movementSpeed = 0.05;
-            const deltaPosition = new THREE.Vector3(
-                Math.sin(deviceRotation.z) * movementSpeed,
-                -deviceRotation.x * movementSpeed,
-                Math.cos(deviceRotation.z) * movementSpeed
-            );
-
-            devicePosition.add(deltaPosition);
-        };
-
-        // Обновление радара
-        const updateRadarDisplay = () => {
-            const radarElement = document.getElementById('radar');
-            radarElement.innerHTML = '';
-
-            // Рассчет относительной позиции
-            const relativePosition = FIXED_CUBE_POSITION.clone().sub(devicePosition);
-            const distance = relativePosition.length();
-            const direction = new THREE.Vector2(
-                relativePosition.x,
-                relativePosition.z
-            ).normalize();
-
-            // Параметры радара
-            const maxDetectionRadius = 20;
-            const radarScale = 60 / maxDetectionRadius;
-            const clampedDistance = Math.min(distance, maxDetectionRadius);
-
-            // Создание маркера
-            const marker = document.createElement('div');
-            marker.style.cssText = `
-                position: absolute;
-                width: ${distance <= 3 ? '14px' : '10px'};
-                height: ${distance <= 3 ? '14px' : '10px'};
-                background: ${distance <= 3 ? '#4CC3D9' : '#FF6B6B'};
-                border-radius: 50%;
-                left: ${60 + direction.x * clampedDistance * radarScale}px;
-                top: ${60 - direction.y * clampedDistance * radarScale}px;
-                box-shadow: 0 0 8px ${distance <= 3 ? '#4CC3D9' : '#FF6B6B'};
-                transition: all 0.3s ease;
-            `;
-
-            radarElement.appendChild(marker);
-        };
-
-        // Запуск AR сессии
-        const startARSession = async () => {
+        async function startTracking() {
             try {
-                // Запрос разрешений для iOS
                 if (typeof DeviceOrientationEvent !== 'undefined' && 
                     typeof DeviceOrientationEvent.requestPermission === 'function') {
                     const permission = await DeviceOrientationEvent.requestPermission();
                     if (permission !== 'granted') {
-                        throw new Error('Необходимо разрешение на использование датчиков');
+                        throw new Error('Требуется разрешение на использование датчиков');
                     }
                 }
 
                 isTracking = true;
                 document.getElementById('startButton').style.display = 'none';
+                
+                let lastTime = performance.now();
+                let animationFrameId;
 
-                // Начальная настройка камеры
-                camera.position.copy(devicePosition);
-                camera.rotation.copy(deviceRotation);
+                const update = () => {
+                    if (!isTracking) return;
+                    
+                    const currentTime = performance.now();
+                    const deltaTime = (currentTime - lastTime) / 1000;
+                    lastTime = currentTime;
 
-                // Запуск циклов обновления
-                setInterval(() => {
-                    camera.position.copy(devicePosition);
-                    camera.rotation.copy(deviceRotation);
-                    updateRadarDisplay();
-                }, 100);
+                    // Расчет ускорения
+                    const acceleration = new THREE.Vector3(
+                        Math.sin(camera.rotation.y) * MOVEMENT_FACTOR,
+                        0,
+                        Math.cos(camera.rotation.y) * MOVEMENT_FACTOR
+                    );
 
-                window.addEventListener('deviceorientation', handleDeviceOrientation);
-                startAnimationLoop();
+                    // Обновление позиции
+                    const targetPosition = sensorFilter.update(acceleration, deltaTime);
+                    camera.position.lerp(targetPosition, SMOOTHING_FACTOR);
 
+                    // Ориентация камеры
+                    camera.lookAt(FIXED_CUBE_POSITION);
+
+                    // Обновление интерфейса
+                    const distance = camera.position.distanceTo(FIXED_CUBE_POSITION);
+                    document.getElementById('statusPanel').textContent = 
+                        `Дистанция: ${distance.toFixed(1)}m`;
+
+                    // Проверка захвата
+                    if (distance < CAPTURE_DISTANCE) {
+                        handleCapture();
+                    }
+
+                    renderer.render(scene, camera);
+                    animationFrameId = requestAnimationFrame(update);
+                };
+
+                update();
             } catch (error) {
                 alert(`Ошибка: ${error.message}`);
+                isTracking = false;
             }
-        };
+        }
 
-        // Цикл анимации
-        const startAnimationLoop = () => {
-            const animate = () => {
-                requestAnimationFrame(animate);
+        function handleCapture() {
+            cube.material.emissive.setHex(0x00ff00);
+            cube.material.needsUpdate = true;
+            document.getElementById('statusPanel').style.color = '#4CC3D9';
+            
+            setTimeout(() => {
+                cube.material.emissive.setHex(0x003333);
+                document.getElementById('statusPanel').style.color = '#fff';
+            }, 500);
+        }
 
-                // Вращение куба
-                cube.rotation.x += 0.005;
-                cube.rotation.y += 0.01;
+        // Инициализация при загрузке
+        window.addEventListener('load', initCamera);
+        document.getElementById('startButton').addEventListener('click', startTracking);
 
-                // Рендер сцены
-                renderer.render(scene, camera);
-            };
-            animate();
-        };
-
-        // Обработчик изменения размера окна
-        const handleWindowResize = () => {
+        // Обработчик изменения размера
+        window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
-        };
+        });
 
-        // Инициализация приложения
-        window.addEventListener('load', initializeDeviceCamera);
-        document.getElementById('startButton').addEventListener('click', startARSession);
-        window.addEventListener('resize', handleWindowResize);
+        // Остановка при закрытии
+        window.addEventListener('beforeunload', () => {
+            isTracking = false;
+            if (renderer) {
+                renderer.dispose();
+            }
+        });
     </script>
 </body>
 </html>
