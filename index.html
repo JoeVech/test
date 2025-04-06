@@ -59,7 +59,7 @@
         let scene, camera, renderer, beast;
         const spriteConfig = {
             tilesHoriz: 4,
-            tilesVert: 4,
+            tilesVert: 1,
             totalTiles: 16,
             frameDuration: 100
         };
@@ -122,7 +122,7 @@
                 
                 // Позиционирование
                 beast.position.set(0, 0, -2);
-                beast.scale.set(1.5, 1.5, 1);
+                beast.scale.set(0.5, 0.5, 0.25);
                 
                 scene.add(beast);
                 setupSpriteAnimation(texture);
