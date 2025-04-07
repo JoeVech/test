@@ -18,7 +18,6 @@
             height: 100%;
             object-fit: cover;
             z-index: 1;
-            transform: scaleX(-1);
         }
 
         #canvasContainer {
@@ -40,6 +39,7 @@
             font-family: Arial;
             text-align: center;
             z-index: 1000;
+            transition: opacity 0.3s;
         }
     </style>
 </head>
@@ -52,7 +52,8 @@
 
     <script>
         (function() {
-            // Инициализация Telegram Web App
+            const loader = document.getElementById('loader');
+            
             if (typeof Telegram !== 'undefined') {
                 Telegram.WebApp.ready();
                 Telegram.WebApp.expand();
@@ -61,17 +62,17 @@
             let scene, camera, renderer, beast, pulseRing;
             const config = {
                 sprite: {
-                    width: 96,    // Ширина всего спрайтшита
-                    height: 24,   // Высота всего спрайтшита
-                    frameWidth: 24,  // Ширина одного кадра
-                    frameHeight: 24, // Высота одного кадра
-                    tilesHoriz: 4,   // 96 / 24 = 4 кадра по горизонтали
-                    tilesVert: 1,    // 24 / 24 = 1 ряд по вертикали
-                    scale: 2.5,      // Масштаб спрайта
+                    width: 96,
+                    height: 24,
+                    frameWidth: 24,
+                    frameHeight: 24,
+                    tilesHoriz: 4,
+                    tilesVert: 1,
+                    scale: 2.5,
                     frameDuration: 150
                 },
                 rhythm: {
-                    radius: 1.8,     // Радиус ритм-кольца
+                    radius: 1.8,
                     pulseSpeed: 0.7,
                     beatInterval: 2000
                 }
@@ -90,17 +91,21 @@
                     const video = document.getElementById('videoContainer');
                     video.srcObject = stream;
 
-                    video.onloadedmetadata = () => {
-                        initThreeJS();
-                        document.getElementById('loader').style.display = 'none';
+                    const hideLoader = () => {
+                        video.removeEventListener('playing', hideLoader);
+                        loader.style.opacity = '0';
+                        setTimeout(() => loader.style.display = 'none', 300);
                     };
 
+                    video.addEventListener('playing', hideLoader);
+                    video.play().catch(err => console.error('Video play error:', err));
+
                 } catch (error) {
-                    document.getElementById('loader').innerHTML = `
+                    loader.innerHTML = `
                         <div style="color: red; padding: 15px; background: rgba(0,0,0,0.8); border-radius: 8px;">
                             <h3 style="margin:0;">Ошибка камеры!</h3>
                             <p>${error.name}: ${error.message}</p>
-                            <p>Разрешите доступ к камере в настройках Telegram</p>
+                            <p>Обновите страницу и разрешите доступ к камере</p>
                         </div>`;
                 }
             }
@@ -108,10 +113,7 @@
             function initThreeJS() {
                 const container = document.getElementById('canvasContainer');
                 
-                // Сцена
                 scene = new THREE.Scene();
-                
-                // Камера
                 camera = new THREE.PerspectiveCamera(
                     55,
                     window.innerWidth / window.innerHeight,
@@ -120,7 +122,6 @@
                 );
                 camera.position.set(0, 0, 5);
 
-                // Рендерер
                 renderer = new THREE.WebGLRenderer({ 
                     alpha: true,
                     antialias: false,
@@ -143,25 +144,27 @@
                     texture.magFilter = THREE.NearestFilter;
                     texture.repeat.set(1/config.sprite.tilesHoriz, 1/config.sprite.tilesVert);
 
-                    const material = new THREE.MeshBasicMaterial({
-                        map: texture,
-                        transparent: true,
-                        depthWrite: false
-                    });
-
-                    // Рассчитываем соотношение сторон
                     const aspect = config.sprite.frameWidth / config.sprite.frameHeight;
                     const geometry = new THREE.PlaneGeometry(
                         aspect * config.sprite.scale,
                         config.sprite.scale
                     );
 
+                    const material = new THREE.MeshBasicMaterial({
+                        map: texture,
+                        transparent: true,
+                        depthWrite: false
+                    });
+
                     beast = new THREE.Mesh(geometry, material);
                     beast.position.set(0, 0, -3);
                     scene.add(beast);
 
                     animateSprite(texture);
-                }, undefined, err => console.error('Ошибка загрузки:', err));
+                }, undefined, err => {
+                    console.error('Texture error:', err);
+                    loader.innerHTML += '<p style="color:yellow">Ошибка загрузки спрайтов</p>';
+                });
             }
 
             function animateSprite(texture) {
@@ -228,7 +231,6 @@
                 requestAnimationFrame(animate);
                 const time = Date.now();
 
-                // Анимация ритм-кольца
                 if (time % config.rhythm.beatInterval < 100) {
                     pulseRing.material.opacity = 0.7;
                     pulseRing.scale.set(1, 1, 1);
@@ -243,8 +245,15 @@
                 renderer.render(scene, camera);
             }
 
-            // Запуск приложения
-            window.addEventListener('load', initCamera);
+            window.addEventListener('load', () => {
+                initCamera();
+                setTimeout(() => {
+                    if (loader.style.display !== 'none') {
+                        loader.innerHTML += '<p style="color:yellow">Проверьте разрешение на доступ к камере</p>';
+                    }
+                }, 3000);
+            });
+
             window.addEventListener('resize', () => {
                 camera.aspect = window.innerWidth / window.innerHeight;
                 camera.updateProjectionMatrix();
