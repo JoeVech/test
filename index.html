@@ -51,198 +51,207 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
     <script>
-        if (typeof Telegram !== 'undefined') {
-            Telegram.WebApp.ready();
-            Telegram.WebApp.expand();
-        }
-
-        let scene, camera, renderer, beast, pulseRing;
-        
-        const spriteConfig = {
-            tilesHoriz: 4,
-            tilesVert: 1,
-            totalTiles: 16,
-            frameDuration: 100
-        };
-
-        const rhythmConfig = {
-            pulseSpeed: 0.8,
-            pulseRadius: 1.8,
-            beatInterval: 2000,
-            lastBeat: 0,
-            isActive: false,
-            perfectRange: 0.1
-        };
-
-        const initCamera = async () => {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: 'environment',
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    }
-                });
-
-                const video = document.getElementById('videoContainer');
-                video.srcObject = stream;
-
-                video.onloadedmetadata = () => {
-                    initThreeJS();
-                    document.getElementById('loader').style.display = 'none';
-                };
-
-            } catch (error) {
-                document.getElementById('loader').innerHTML = `
-                    <div style="color: red">
-                        Ошибка доступа к камере!<br>
-                        ${error.name}: ${error.message}<br>
-                        Обновите страницу и разрешите доступ
-                    </div>`;
+        (function() {
+            // Инициализация Telegram Web App
+            if (typeof Telegram !== 'undefined') {
+                Telegram.WebApp.ready();
+                Telegram.WebApp.expand();
             }
-        };
 
-        const initThreeJS = () => {
-            const container = document.getElementById('canvasContainer');
-            
-            scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-            camera.position.z = 3;
+            let scene, camera, renderer, beast, pulseRing;
+            const config = {
+                sprite: {
+                    width: 96,    // Ширина всего спрайтшита
+                    height: 24,   // Высота всего спрайтшита
+                    frameWidth: 24,  // Ширина одного кадра
+                    frameHeight: 24, // Высота одного кадра
+                    tilesHoriz: 4,   // 96 / 24 = 4 кадра по горизонтали
+                    tilesVert: 1,    // 24 / 24 = 1 ряд по вертикали
+                    scale: 2.5,      // Масштаб спрайта
+                    frameDuration: 150
+                },
+                rhythm: {
+                    radius: 1.8,     // Радиус ритм-кольца
+                    pulseSpeed: 0.7,
+                    beatInterval: 2000
+                }
+            };
 
-            renderer = new THREE.WebGLRenderer({ 
-                alpha: true,
-                antialias: true
-            });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            container.appendChild(renderer.domElement);
+            async function initCamera() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            facingMode: 'environment',
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 }
+                        }
+                    });
 
-            createRhythmRing();
-            loadBeast();
-            setupEventHandlers();
-            animate();
-        };
+                    const video = document.getElementById('videoContainer');
+                    video.srcObject = stream;
 
-        const createRhythmRing = () => {
-            const geometry = new THREE.RingGeometry(
-                rhythmConfig.pulseRadius - 0.2,
-                rhythmConfig.pulseRadius,
-                64
-            );
-            const material = new THREE.MeshBasicMaterial({
-                color: 0xFF4500,
-                transparent: true,
-                opacity: 0,
-                side: THREE.DoubleSide
-            });
-            
-            pulseRing = new THREE.Mesh(geometry, material);
-            scene.add(pulseRing);
-        };
+                    video.onloadedmetadata = () => {
+                        initThreeJS();
+                        document.getElementById('loader').style.display = 'none';
+                    };
 
-        const loadBeast = () => {
-            new THREE.TextureLoader().load('beast_spritesheet.png', texture => {
-                texture.repeat.set(1/spriteConfig.tilesHoriz, 1/spriteConfig.tilesVert);
-                texture.minFilter = THREE.LinearFilter;
+                } catch (error) {
+                    document.getElementById('loader').innerHTML = `
+                        <div style="color: red; padding: 15px; background: rgba(0,0,0,0.8); border-radius: 8px;">
+                            <h3 style="margin:0;">Ошибка камеры!</h3>
+                            <p>${error.name}: ${error.message}</p>
+                            <p>Разрешите доступ к камере в настройках Telegram</p>
+                        </div>`;
+                }
+            }
+
+            function initThreeJS() {
+                const container = document.getElementById('canvasContainer');
+                
+                // Сцена
+                scene = new THREE.Scene();
+                
+                // Камера
+                camera = new THREE.PerspectiveCamera(
+                    55,
+                    window.innerWidth / window.innerHeight,
+                    0.1,
+                    1000
+                );
+                camera.position.set(0, 0, 5);
+
+                // Рендерер
+                renderer = new THREE.WebGLRenderer({ 
+                    alpha: true,
+                    antialias: false,
+                    powerPreference: "high-performance"
+                });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(window.devicePixelRatio);
+                container.appendChild(renderer.domElement);
+
+                initBeast();
+                initRhythmRing();
+                setupEventHandlers();
+                animate();
+            }
+
+            function initBeast() {
+                const textureLoader = new THREE.TextureLoader();
+                textureLoader.load('beast_spritesheet.png', texture => {
+                    texture.minFilter = THREE.NearestFilter;
+                    texture.magFilter = THREE.NearestFilter;
+                    texture.repeat.set(1/config.sprite.tilesHoriz, 1/config.sprite.tilesVert);
+
+                    const material = new THREE.MeshBasicMaterial({
+                        map: texture,
+                        transparent: true,
+                        depthWrite: false
+                    });
+
+                    // Рассчитываем соотношение сторон
+                    const aspect = config.sprite.frameWidth / config.sprite.frameHeight;
+                    const geometry = new THREE.PlaneGeometry(
+                        aspect * config.sprite.scale,
+                        config.sprite.scale
+                    );
+
+                    beast = new THREE.Mesh(geometry, material);
+                    beast.position.set(0, 0, -3);
+                    scene.add(beast);
+
+                    animateSprite(texture);
+                }, undefined, err => console.error('Ошибка загрузки:', err));
+            }
+
+            function animateSprite(texture) {
+                let currentFrame = 0;
+                let lastUpdate = 0;
+
+                function update(time) {
+                    if (time - lastUpdate > config.sprite.frameDuration) {
+                        currentFrame = (currentFrame + 1) % config.sprite.tilesHoriz;
+                        texture.offset.x = currentFrame / config.sprite.tilesHoriz;
+                        lastUpdate = time;
+                    }
+                    requestAnimationFrame(update);
+                }
+                update(0);
+            }
+
+            function initRhythmRing() {
+                const geometry = new THREE.RingGeometry(
+                    config.rhythm.radius - 0.3,
+                    config.rhythm.radius,
+                    32
+                );
                 
                 const material = new THREE.MeshBasicMaterial({
-                    map: texture,
+                    color: 0xFFA500,
                     transparent: true,
-                    depthWrite: false
+                    opacity: 0,
+                    side: THREE.DoubleSide
                 });
 
-                beast = new THREE.Mesh(
-                    new THREE.PlaneGeometry(1.5, 1.5),
-                    material
-                );
-                beast.position.set(0, 0, -1);
-                scene.add(beast);
+                pulseRing = new THREE.Mesh(geometry, material);
+                pulseRing.position.copy(beast.position);
+                scene.add(pulseRing);
+            }
 
-                startSpriteAnimation(texture);
-            });
-        };
+            function setupEventHandlers() {
+                const mouse = new THREE.Vector2();
+                const raycaster = new THREE.Raycaster();
 
-        const startSpriteAnimation = (texture) => {
-            let currentFrame = 0;
-            let lastUpdate = 0;
+                function handleTap(e) {
+                    const rect = renderer.domElement.getBoundingClientRect();
+                    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-            const animateSprite = (time) => {
-                if (time - lastUpdate > spriteConfig.frameDuration) {
-                    currentFrame = (currentFrame + 1) % spriteConfig.totalTiles;
-                    const col = currentFrame % spriteConfig.tilesHoriz;
-                    const row = Math.floor(currentFrame / spriteConfig.tilesHoriz);
+                    raycaster.setFromCamera(mouse, camera);
+                    const intersects = raycaster.intersectObject(pulseRing);
 
-                    texture.offset.set(col / spriteConfig.tilesHoriz, 1 - (row + 1)/spriteConfig.tilesVert);
-                    lastUpdate = time;
-                }
-                requestAnimationFrame(animateSprite);
-            };
-            animateSprite(0);
-        };
-
-        const setupEventHandlers = () => {
-            const mouse = new THREE.Vector2();
-            const raycaster = new THREE.Raycaster();
-
-            const handleTap = (e) => {
-                const rect = renderer.domElement.getBoundingClientRect();
-                mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-                mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-                raycaster.setFromCamera(mouse, camera);
-                const intersects = raycaster.intersectObject(pulseRing);
-
-                if (intersects.length > 0 && rhythmConfig.isActive) {
-                    const dist = intersects[0].distance;
-                    const accuracy = 1 - Math.abs(dist - rhythmConfig.pulseRadius)/rhythmConfig.pulseRadius;
-
-                    if (accuracy > 0.9) {
+                    if (intersects.length > 0 && pulseRing.material.opacity > 0.1) {
                         if (typeof Telegram !== 'undefined') {
-                            Telegram.WebApp.HapticFeedback.impactOccurred('heavy');
+                            Telegram.WebApp.HapticFeedback.impactOccurred('medium');
                         }
                         pulseRing.material.opacity = 0;
-                        rhythmConfig.isActive = false;
-                        beast.scale.set(1.2, 1.2, 1);
-                        setTimeout(() => beast.scale.set(1, 1, 1), 150);
+                        beast.scale.set(config.sprite.scale * 1.2, config.sprite.scale * 1.2, 1);
+                        setTimeout(() => beast.scale.set(config.sprite.scale, config.sprite.scale, 1), 200);
                     }
                 }
-            };
 
-            window.addEventListener('click', handleTap);
-            window.addEventListener('touchstart', handleTap);
-        };
-
-        const animate = () => {
-            requestAnimationFrame(animate);
-            const now = Date.now();
-
-            // Ритмическая пульсация
-            if (!rhythmConfig.isActive && now - rhythmConfig.lastBeat > rhythmConfig.beatInterval) {
-                rhythmConfig.isActive = true;
-                rhythmConfig.lastBeat = now;
-                pulseRing.material.opacity = 0.7;
-                pulseRing.scale.set(1, 1, 1);
+                window.addEventListener('click', handleTap);
+                window.addEventListener('touchstart', handleTap);
             }
 
-            if (rhythmConfig.isActive) {
-                const progress = (now - rhythmConfig.lastBeat) / 1000;
-                pulseRing.scale.set(1 + progress, 1 + progress, 1);
-                pulseRing.material.opacity = 0.7 - progress * 1.5;
+            function animate() {
+                requestAnimationFrame(animate);
+                const time = Date.now();
 
-                if (progress > 0.5) {
-                    rhythmConfig.isActive = false;
-                    pulseRing.material.opacity = 0;
+                // Анимация ритм-кольца
+                if (time % config.rhythm.beatInterval < 100) {
+                    pulseRing.material.opacity = 0.7;
+                    pulseRing.scale.set(1, 1, 1);
                 }
+
+                if (pulseRing.material.opacity > 0) {
+                    const progress = (time % config.rhythm.beatInterval) / config.rhythm.beatInterval;
+                    pulseRing.scale.set(1 + progress * config.rhythm.pulseSpeed, 1 + progress * config.rhythm.pulseSpeed, 1);
+                    pulseRing.material.opacity = 0.7 * (1 - progress);
+                }
+
+                renderer.render(scene, camera);
             }
 
-            renderer.render(scene, camera);
-        };
+            // Запуск приложения
+            window.addEventListener('load', initCamera);
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
 
-        window.addEventListener('load', initCamera);
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
+        })();
     </script>
 </body>
 </html>
