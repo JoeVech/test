@@ -27,7 +27,6 @@
             width: 100%;
             height: 100%;
             z-index: 2;
-            pointer-events: none;
         }
 
         .loader {
@@ -56,7 +55,6 @@
             let scene, camera, renderer, beast, pulseRing;
             let isCameraReady = false;
 
-            // Конфигурация
             const config = {
                 sprite: {
                     width: 96,
@@ -65,24 +63,24 @@
                     frameHeight: 24,
                     tilesHoriz: 4,
                     tilesVert: 1,
-                    scale: 1.5,
+                    scale: 1.2,
                     frameDuration: 150,
                     positionZ: -2
                 },
                 rhythm: {
-                    radius: 1.2,
-                    pulseSpeed: 0.5,
-                    beatInterval: 2000
+                    radius: 0.8,
+                    pulseSpeed: 0.3,
+                    beatInterval: 2000,
+                    maxScale: 1.3
                 },
                 camera: {
-                    fov: 60,
+                    fov: 45,
                     positionZ: 3,
                     near: 0.1,
                     far: 1000
                 }
             };
 
-            // Инициализация Telegram Web App
             if (typeof Telegram !== 'undefined') {
                 Telegram.WebApp.ready();
                 Telegram.WebApp.expand();
@@ -120,10 +118,7 @@
             }
 
             function initThreeJS() {
-                // Инициализация сцены
                 scene = new THREE.Scene();
-
-                // Настройка камеры
                 camera = new THREE.PerspectiveCamera(
                     config.camera.fov,
                     window.innerWidth / window.innerHeight,
@@ -132,16 +127,14 @@
                 );
                 camera.position.set(0, 0, config.camera.positionZ);
 
-                // Инициализация рендерера
                 renderer = new THREE.WebGLRenderer({ 
                     alpha: true,
                     antialias: true
                 });
                 renderer.setSize(window.innerWidth, window.innerHeight);
-                renderer.setPixelRatio(window.devicePixelRatio);
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
                 document.getElementById('canvasContainer').appendChild(renderer.domElement);
 
-                // Загрузка и инициализация объектов
                 loadBeast();
                 initRhythmRing();
                 setupEventHandlers();
@@ -197,7 +190,7 @@
 
             function initRhythmRing() {
                 const geometry = new THREE.RingGeometry(
-                    config.rhythm.radius - 0.2,
+                    config.rhythm.radius - 0.15,
                     config.rhythm.radius,
                     32
                 );
@@ -210,26 +203,35 @@
                 });
 
                 pulseRing = new THREE.Mesh(geometry, material);
-                pulseRing.position.set(0, 0, config.sprite.positionZ + 0.1);
+                pulseRing.position.set(0, 0, config.sprite.positionZ + 0.05);
                 scene.add(pulseRing);
             }
 
             function setupEventHandlers() {
                 const raycaster = new THREE.Raycaster();
                 const mouse = new THREE.Vector2();
+                let downTime = 0;
 
-                function handleTap(e) {
+                function handleTapStart(e) {
+                    downTime = Date.now();
+                }
+
+                function handleTapEnd(e) {
+                    if (Date.now() - downTime > 200) return;
                     if (!isCameraReady) return;
 
                     const rect = renderer.domElement.getBoundingClientRect();
-                    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-                    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+                    const clientX = e.clientX || e.touches[0].clientX;
+                    const clientY = e.clientY || e.touches[0].clientY;
+
+                    mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+                    mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
                     raycaster.setFromCamera(mouse, camera);
                     
-                    // Проверка пересечения с зверем
-                    const intersects = raycaster.intersectObject(beast);
-                    if (intersects.length > 0) {
+                    // Проверка пересечения со зверем
+                    const beastIntersects = raycaster.intersectObject(beast);
+                    if (beastIntersects.length > 0) {
                         handleCatch();
                         return;
                     }
@@ -242,42 +244,47 @@
                 }
 
                 function handleCatch() {
-                    if (typeof Telegram !== 'undefined') {
-                        Telegram.WebApp.HapticFeedback.impactOccurred('heavy');
-                    }
+                    triggerVibration(50);
                     beast.scale.set(1.3, 1.3, 1);
                     setTimeout(() => beast.scale.set(1, 1, 1), 200);
-                    console.log('Зверь пойман!');
                 }
 
                 function handleRingTap() {
-                    if (typeof Telegram !== 'undefined') {
-                        Telegram.WebApp.HapticFeedback.impactOccurred('medium');
-                    }
-                    pulseRing.scale.set(1.2, 1.2, 1);
+                    triggerVibration(30);
+                    pulseRing.scale.set(1.1, 1.1, 1);
                     setTimeout(() => pulseRing.scale.set(1, 1, 1), 200);
                 }
 
-                window.addEventListener('click', handleTap);
-                window.addEventListener('touchstart', handleTap);
+                function triggerVibration(duration) {
+                    if (typeof Telegram !== 'undefined' && Telegram.WebApp.HapticFeedback) {
+                        Telegram.WebApp.HapticFeedback.impactOccurred('medium');
+                    } else if (navigator.vibrate) {
+                        navigator.vibrate(duration);
+                    }
+                }
+
+                window.addEventListener('mousedown', handleTapStart);
+                window.addEventListener('touchstart', handleTapStart);
+                window.addEventListener('mouseup', handleTapEnd);
+                window.addEventListener('touchend', handleTapEnd);
             }
 
             function animate() {
                 requestAnimationFrame(animate);
                 if (!isCameraReady) return;
 
-                // Анимация пульсации кольца
+                // Плавная пульсация кольца
                 const time = Date.now() * 0.001;
+                const scale = 1 + Math.sin(time * 3) * config.rhythm.pulseSpeed;
                 pulseRing.scale.set(
-                    1 + Math.sin(time) * config.rhythm.pulseSpeed,
-                    1 + Math.sin(time) * config.rhythm.pulseSpeed,
+                    Math.min(scale, config.rhythm.maxScale),
+                    Math.min(scale, config.rhythm.maxScale),
                     1
                 );
 
                 renderer.render(scene, camera);
             }
 
-            // Запуск приложения
             window.addEventListener('load', initCamera);
             window.addEventListener('resize', () => {
                 if (!camera) return;
